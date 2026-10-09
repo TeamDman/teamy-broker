@@ -1,0 +1,67 @@
+[package]
+name = "teamy-broker-sdk"
+version = "0.1.0"
+edition = "2024"
+license = "MPL-2.0"
+authors = ["TeamDman"]
+description = "Thin Windows named-pipe SDK for teamy-broker"
+repository = "https://github.com/TeamDman/teamy-broker"
+readme = "../README.md"
+keywords = ["credentials", "broker", "windows", "ipc"]
+categories = ["os::windows-apis"]
+[dependencies]
+eyre = "0.6"
+zeroize = "1.8"
+uuid = { version = "1", features = ["v4"] }
+directories-next = "2"
+tokio = { version = "1.49", features = ["io-util", "net", "time"] }
+facet = { git = "https://github.com/TeamDman/facet.git", rev = "23ad4dcd0", package = "facet" }
+facet-json = { git = "https://github.com/TeamDman/facet.git", rev = "23ad4dcd0", package = "facet-json" }
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_Security_Credentials", "Win32_Security_Cryptography"] }
+
+[lints.rust]
+ambiguous_negative_literals = "warn"
+unfulfilled_lint_expectations = "deny"
+missing_debug_implementations = "warn"
+redundant_imports = "warn"
+redundant_lifetimes = "warn"
+trivial_numeric_casts = "warn"
+unsafe_op_in_unsafe_fn = "warn"
+unused_lifetimes = "warn"
+
+[lints.clippy]
+disallowed_macros = "deny"
+disallowed_methods = "deny"
+cargo = { level = "warn", priority = -1 }
+complexity = { level = "warn", priority = -1 }
+correctness = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+suspicious = { level = "warn", priority = -1 }
+multiple_crate_versions = "allow" # turn this off periodically to see how bad it has gotten :P
+# nursery = { level = "warn", priority = -1 }  # optional, might cause more false positives
+multiple_unsafe_ops_per_block = "deny"
+module_inception = "allow"
+allow_attributes = "deny"
+allow_attributes_without_reason = "warn"
+as_pointer_underscore = "warn"
+assertions_on_result_states = "warn"
+clone_on_ref_ptr = "warn"
+deref_by_slicing = "warn"
+disallowed_script_idents = "allow" # facet macros use Unicode identifiers
+empty_drop = "warn"
+empty_enum_variants_with_brackets = "warn"
+empty_structs_with_brackets = "warn"
+fn_to_numeric_cast_any = "warn"
+if_then_some_else_none = "warn"
+map_err_ignore = "warn"
+redundant_type_annotations = "warn"
+renamed_function_params = "warn"
+semicolon_outside_block = "warn"
+undocumented_unsafe_blocks = "warn"
+unnecessary_safety_comment = "warn"
+unnecessary_safety_doc = "warn"
+unneeded_field_pattern = "warn"
+unused_result_ok = "warn"
