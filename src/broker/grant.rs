@@ -1,5 +1,6 @@
 use zeroize::Zeroizing;
 pub struct Grant {
+    pub(crate) work: super::work_guard::WorkGuard,
     pub id: String,
     pub expires: u64,
     pub deadline: std::time::Instant,

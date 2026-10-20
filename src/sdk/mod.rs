@@ -1,8 +1,12 @@
+mod approval_preview;
 pub mod client;
+mod phone;
 pub mod provider;
 pub mod secret;
+mod shared_preview;
 pub use crate::protocol::AcquireRequest;
 pub use crate::protocol::Backend;
+pub use crate::protocol::FailureKind;
 pub use crate::protocol::Status;
 pub use client::Client;
 pub use provider::resolve_provider;

@@ -9,6 +9,7 @@ mod sdk;
 pub use sdk::AcquireRequest;
 pub use sdk::Backend;
 pub use sdk::Client;
+pub use sdk::FailureKind;
 pub use sdk::Secret;
 pub use sdk::Status;
 pub use sdk::resolve_provider;

@@ -12,6 +12,7 @@ categories = ["command-line-utilities"]
 documentation = "https://github.com/TeamDman/teamy-broker"
 
 [dependencies]
+teamy-broker-handoff = { path = "handoff" }
 arbitrary = { version = "1.4.1", features = ["derive"] }
 chrono = "0.4"
 color-eyre = "0.6.5"
@@ -37,10 +38,14 @@ open = "5"
 zeroize = "1.8"
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
+rustls = { version = "=0.23.45", default-features = false, features = ["std", "ring", "tls12"] }
+tokio-rustls = { version = "=0.26.6", default-features = false, features = ["ring", "tls12"] }
+rcgen = { version = "=0.14.7", default-features = false, features = ["crypto", "ring"] }
+time = "0.3"
 fs2 = "0.4"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Credentials", "Win32_Security_Cryptography", "Win32_System_Memory", "Win32_System_Threading", "Win32_System_Pipes", "Win32_System_SystemInformation", "Win32_UI_Controls", "Win32_UI_WindowsAndMessaging", "Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Credentials", "Win32_Security_Cryptography", "Win32_System_Memory", "Win32_System_Threading", "Win32_System_Pipes", "Win32_System_SystemInformation", "Win32_System_Diagnostics_Debug", "Win32_UI_Controls", "Win32_UI_WindowsAndMessaging", "Win32_Storage_FileSystem", "Win32_Graphics_Gdi", "Win32_Graphics_Dwm", "Win32_System_StationsAndDesktops", "Win32_System_RemoteDesktop"] }
 windows = { version = "0.62.2", features = [
     "Win32_Globalization",
     "Win32_System_Console",
@@ -100,6 +105,9 @@ unnecessary_safety_doc = "warn"
 unneeded_field_pattern = "warn"
 unused_result_ok = "warn"
 
+[dev-dependencies]
+tokio = { version = "1.49.0", features = ["test-util"] }
+
 [workspace]
-members = ["sdk"]
+members = ["sdk", "handoff"]
 resolver = "3"

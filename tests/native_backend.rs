@@ -190,7 +190,7 @@ async fn sdk_persistent_reads_fail_closed_after_purge_and_restart() {
             .load_cached(backend.clone(), secret.lease_id.clone())
             .await
             .unwrap_err();
-        client.stop().await.unwrap();
+        client.stop_force().await.unwrap();
         server.await.unwrap().unwrap();
         let _ = client
             .load_cached(backend.clone(), secret.lease_id.clone())
@@ -237,6 +237,6 @@ async fn assert_restarted_rejects(
         tokio::task::yield_now().await;
     }
     let _ = client.load_cached(backend, lease_id).await.unwrap_err();
-    client.stop().await.unwrap();
+    client.stop_force().await.unwrap();
     new_server.await.unwrap().unwrap();
 }

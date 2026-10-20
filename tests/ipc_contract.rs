@@ -63,7 +63,7 @@ async fn real_windows_pipe_multiple_clients_purge_stop_and_single_instance() {
     assert_eq!(client.status().await.unwrap().active_leases, 1);
     client.purge(None).await.unwrap();
     assert_eq!(client.status().await.unwrap().active_leases, 0);
-    client.stop().await.unwrap();
+    client.stop_force().await.unwrap();
     server.await.unwrap().unwrap();
     assert!(!client.status().await.unwrap().running);
 }
@@ -168,7 +168,7 @@ async fn sdk_autostart_race_has_one_ready_daemon_and_no_orphan_after_stop() {
     while let Some(result) = tasks.join_next().await {
         assert_eq!(first.lease_id, result.unwrap().lease_id);
     }
-    client.stop().await.unwrap();
+    client.stop_force().await.unwrap();
     for _ in 0..100 {
         if !client.status().await.unwrap().running {
             return;

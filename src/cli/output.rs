@@ -15,12 +15,20 @@ pub enum OutputFormat {
     Csv,
 }
 
-pub struct CliOutput(Option<Box<dyn CliOutputValue>>);
+pub struct CliOutput {
+    value: Option<Box<dyn CliOutputValue>>,
+    /// Completion-time budget, including output. None explicitly exempts interactive or unbounded work.
+    pub elapsed_duration_warn_threshold: Option<std::time::Duration>,
+}
 
 impl core::fmt::Debug for CliOutput {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("CliOutput")
-            .field("has_value", &self.0.is_some())
+            .field("has_value", &self.value.is_some())
+            .field(
+                "elapsed_duration_warn_threshold",
+                &self.elapsed_duration_warn_threshold,
+            )
             .finish()
     }
 }
@@ -39,16 +47,22 @@ struct FacetCliOutput<T> {
 
 impl CliOutput {
     #[must_use]
-    pub const fn none() -> Self {
-        Self(None)
+    pub const fn none(elapsed_duration_warn_threshold: Option<std::time::Duration>) -> Self {
+        Self {
+            value: None,
+            elapsed_duration_warn_threshold,
+        }
     }
 
     #[must_use]
-    pub fn facet<T>(value: T) -> Self
+    pub fn facet<T>(value: T, elapsed_duration_warn_threshold: Option<std::time::Duration>) -> Self
     where
         T: Facet<'static> + 'static,
     {
-        Self(Some(Box::new(FacetCliOutput { value })))
+        Self {
+            value: Some(Box::new(FacetCliOutput { value })),
+            elapsed_duration_warn_threshold,
+        }
     }
 
     /// Render into the caller's writer, using its explicit terminal status for automatic
@@ -63,7 +77,7 @@ impl CliOutput {
         requested_format: Option<OutputFormat>,
         output_is_terminal: bool,
     ) -> eyre::Result<()> {
-        let Some(output) = self.0 else {
+        let Some(output) = self.value else {
             return Ok(());
         };
 
@@ -86,12 +100,6 @@ impl CliOutput {
         }
         writer.flush().wrap_err("failed to flush command output")?;
         Ok(())
-    }
-}
-
-impl Default for CliOutput {
-    fn default() -> Self {
-        Self::none()
     }
 }
 
@@ -132,6 +140,21 @@ mod tests {
         count: u32,
     }
 
+    #[test]
+    fn budget_metadata_never_changes_serialized_result() {
+        let mut reference = Vec::new();
+        CliOutput::facet(report(), Some(std::time::Duration::from_secs(1)))
+            .emit_to(&mut reference, Some(OutputFormat::Json), false)
+            .unwrap();
+        for threshold in [None, Some(std::time::Duration::from_secs(30))] {
+            let mut bytes = Vec::new();
+            CliOutput::facet(report(), threshold)
+                .emit_to(&mut bytes, Some(OutputFormat::Json), false)
+                .unwrap();
+            assert_eq!(bytes, reference);
+        }
+    }
+
     fn report() -> Report {
         Report {
             message: "Captured output".to_owned(),
@@ -149,7 +172,10 @@ mod tests {
     }
 
     fn fixed_output(text: &'static str) -> CliOutput {
-        CliOutput(Some(Box::new(FixedOutput(text))))
+        CliOutput {
+            value: Some(Box::new(FixedOutput(text))),
+            elapsed_duration_warn_threshold: Some(std::time::Duration::from_secs(1)),
+        }
     }
 
     #[derive(Debug, Default)]
@@ -189,7 +215,7 @@ mod tests {
     fn injected_vec_captures_typed_json_for_pipe_default_and_explicit_format() {
         for (format, terminal) in [(None, false), (Some(OutputFormat::Json), true)] {
             let mut bytes = Vec::new();
-            CliOutput::facet(report())
+            CliOutput::facet(report(), Some(std::time::Duration::from_secs(1)))
                 .emit_to(&mut bytes, format, terminal)
                 .expect("captured JSON output");
             assert_eq!(bytes.last(), Some(&b'\n'));
@@ -203,14 +229,14 @@ mod tests {
     #[test]
     fn text_output_uses_supplied_terminal_status_for_colors() {
         let mut pipe = Vec::new();
-        CliOutput::facet(report())
+        CliOutput::facet(report(), Some(std::time::Duration::from_secs(1)))
             .emit_to(&mut pipe, Some(OutputFormat::Text), false)
             .expect("plain text capture");
         assert!(!pipe.contains(&0x1b));
         assert!(String::from_utf8(pipe).unwrap().contains("Captured output"));
 
         let mut terminal = Vec::new();
-        CliOutput::facet(report())
+        CliOutput::facet(report(), Some(std::time::Duration::from_secs(1)))
             .emit_to(&mut terminal, None, true)
             .expect("terminal text capture");
         assert!(terminal.contains(&0x1b));
@@ -219,7 +245,7 @@ mod tests {
     #[test]
     fn injected_vec_captures_csv_row_without_terminal_decoration() {
         let mut bytes = Vec::new();
-        CliOutput::facet(report())
+        CliOutput::facet(report(), Some(std::time::Duration::from_secs(1)))
             .emit_to(&mut bytes, Some(OutputFormat::Csv), true)
             .expect("captured CSV output");
         assert_eq!(bytes.last(), Some(&b'\n'));
@@ -233,7 +259,7 @@ mod tests {
     #[test]
     fn csv_sequence_serialization_failure_neither_writes_nor_flushes() {
         let mut writer = FaultWriter::default();
-        let error = CliOutput::facet(vec![report()])
+        let error = CliOutput::facet(vec![report()], Some(std::time::Duration::from_secs(1)))
             .emit_to(&mut writer, Some(OutputFormat::Csv), false)
             .expect_err("the pinned CSV serializer does not support sequences");
         assert!(
@@ -313,7 +339,7 @@ mod tests {
             fail_flush: true,
             ..Default::default()
         };
-        CliOutput::none()
+        CliOutput::none(Some(std::time::Duration::from_secs(1)))
             .emit_to(&mut writer, Some(OutputFormat::Csv), false)
             .expect("no output does not use writer");
         assert!(writer.bytes.is_empty());

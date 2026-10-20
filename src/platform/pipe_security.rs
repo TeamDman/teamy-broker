@@ -7,7 +7,9 @@ use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 ///
 /// Returns an error on invalid configuration, expired leases, denial, or failed I/O.
 pub fn create(endpoint: &str, first: bool) -> eyre::Result<NamedPipeServer> {
+    tracing::debug!(phase = "pipe-owner-query", "Broker pipe setup");
     let sddl = super::identity::wide(&format!("D:P(A;;GA;;;{})", super::identity::sid()?));
+    tracing::debug!(phase = "acl-create", "Broker pipe setup");
     let mut descriptor = std::ptr::null_mut();
     // SAFETY: NUL-terminated SDDL and valid descriptor output pointer.
     eyre::ensure!(
@@ -27,6 +29,7 @@ pub fn create(endpoint: &str, first: bool) -> eyre::Result<NamedPipeServer> {
         lpSecurityDescriptor: descriptor,
         bInheritHandle: 0,
     };
+    tracing::debug!(phase = "pipe-create", "Broker pipe setup");
     // SAFETY: attributes and descriptor remain live through CreateNamedPipe; Windows copies the security descriptor.
     let result = unsafe {
         ServerOptions::new()
@@ -36,5 +39,10 @@ pub fn create(endpoint: &str, first: bool) -> eyre::Result<NamedPipeServer> {
     };
     // SAFETY: descriptor allocation was returned by the SDDL conversion.
     unsafe { LocalFree(descriptor) };
+    tracing::debug!(
+        phase = "pipe-create-complete",
+        success = result.is_ok(),
+        "Broker pipe setup"
+    );
     Ok(result?)
 }

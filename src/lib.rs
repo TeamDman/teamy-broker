@@ -2,18 +2,16 @@
 compile_error!("teamy-broker V1 supports Windows only");
 mod entrypoint;
 mod failure_record;
-pub mod progress;
 pub use entrypoint::entrypoint;
 pub use entrypoint::entrypoint_with_failure_message;
 pub mod cli;
-pub mod command_timing;
+pub mod elapsed_duration;
 pub mod logging_init;
 pub mod paths;
 #[cfg(windows)]
 mod windows_startup;
 
 use crate::cli::Cli;
-use crate::command_timing::CommandTimer;
 use chrono::DateTime;
 use chrono::Local;
 use chrono::Utc;
@@ -104,66 +102,35 @@ pub fn main() -> eyre::Result<()> {
     };
 
     let command_name = cli.command.name();
-    let run_id = format!(
-        "{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_nanos()
-    );
-    let mut progress = progress::ProgressEvent {
-        run_id: &run_id,
-        task_id: "command",
-        parent_task_id: None,
-        operation: command_name,
-        phase: "command",
-        state: progress::ProgressState::Started,
-        completed: 0,
-        total: Some(1),
-        unit: "commands",
-    };
-    progress.emit()?;
+    tracing::debug!(command = command_name, "Dispatching command");
     let result = (|| -> eyre::Result<()> {
         // Measure command work after logging setup, including output and early returns.
         let command_name = cli.command.name();
-        let _command_span = tracing::info_span!("command", command = command_name, run_id = %run_id, task_id = "command").entered();
-        let mut command_timer = cli
-            .command
-            .expected_duration()
-            .map(|expected| CommandTimer::new(command_name, expected));
-        if let Some(timer) = &mut command_timer {
-            timer.checkpoint("dispatch");
-        }
+        let _command_span = tracing::info_span!("command", command = command_name).entered();
+        let started = std::time::Instant::now();
 
         // Invoke whatever command was requested and render its output once at the top level
         let requested_output_format = cli.global_args.output_format;
         let output = cli.invoke(cancellation_token.clone())?;
-        if let Some(timer) = &mut command_timer {
-            timer.checkpoint("dispatch");
-        }
+        let threshold = output.elapsed_duration_warn_threshold;
         cancellation_token.bail_if_cancelled()?;
         let stdout = io::stdout();
         let output_is_terminal = stdout.is_terminal();
-        if let Some(timer) = &mut command_timer {
-            timer.checkpoint("output");
-        }
-        output.emit_to(
+        let emitted = output.emit_to(
             &mut stdout.lock(),
             requested_output_format,
             output_is_terminal,
-        )?;
+        );
+        elapsed_duration::warn_if_exceeded(command_name, started.elapsed(), threshold);
+        emitted?;
         cancellation_token.bail_if_cancelled()?;
         Ok(())
     })();
-    progress.state = if result.is_ok() {
-        progress::ProgressState::Completed
-    } else if cancellation_token.is_cancelled() {
-        progress::ProgressState::Cancelled
-    } else {
-        progress::ProgressState::Failed
-    };
-    progress.completed = u64::from(result.is_ok());
-    progress.emit()?;
+    tracing::debug!(
+        command = command_name,
+        success = result.is_ok(),
+        "Command finished"
+    );
     result
 }
 

@@ -23,7 +23,7 @@ fn scratch() -> std::path::PathBuf {
 }
 
 #[test]
-fn independent_defaults_preserve_debug_in_file_and_numeric_progress_on_stderr() {
+fn independent_defaults_keep_command_lifecycle_in_debug_file() {
     let root = scratch();
     let file = root.join("capture.ndjson");
     let output = Command::new(env!("CARGO_BIN_EXE_teamy-broker"))
@@ -49,9 +49,7 @@ fn independent_defaults_preserve_debug_in_file_and_numeric_progress_on_stderr() 
         let record: LogLine = facet_json::from_str(line).unwrap();
         assert_ne!(record.level, "DEBUG");
     }
-    assert!(stderr.contains("\"completed\":0"));
-    assert!(stderr.contains("\"total\":1"));
-    assert!(stderr.contains("\"state\":\"completed\""));
+    assert!(!stderr.contains("\"task_id\":\"command\""));
     let file_text = fs::read_to_string(&file).unwrap();
     assert!(
         file_text
@@ -59,6 +57,18 @@ fn independent_defaults_preserve_debug_in_file_and_numeric_progress_on_stderr() 
             .map(|line| facet_json::from_str::<LogLine>(line).unwrap())
             .any(|record| record.level == "DEBUG")
     );
+    assert!(file_text.contains("Dispatching command"));
+    assert!(file_text.contains("Command finished"));
+    assert!(!file_text.contains("progress_event.rs"));
+    let dispatch = file_text
+        .lines()
+        .find(|line| line.contains("Dispatching command"))
+        .unwrap();
+    assert!(dispatch.contains("lib.rs"));
+    assert!(dispatch.contains("\"level\":\"DEBUG\""));
+    assert!(!dispatch.contains("origin_file"));
+    assert!(!stderr.contains("Dispatching command"));
+    assert!(!stderr.contains("Command finished"));
     assert!(!file_text.contains('\u{1b}'));
     assert!(
         !String::from_utf8(output.stdout)

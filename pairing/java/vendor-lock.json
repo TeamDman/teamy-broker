@@ -1,0 +1,137 @@
+{
+  "Repository": "https://github.com/google/ukey2",
+  "Revision": "10fc737aa901e873a3367e7e26b88eb01cd55d69",
+  "ArchiveSHA256": "BB69B7322AEEB9D36819274F2E73652E7890AB0BEC9F92CFE72704B0DABB6006",
+  "License": "Apache-2.0",
+  "Modified": false,
+  "Files": [
+    {
+      "Path": "LICENSE",
+      "SHA256": "CFC7749B96F63BD31C3C42B5C471BF756814053E847C10F3EB003417BC523D30"
+    },
+    {
+      "Path": "NOTICE",
+      "SHA256": "C693279643B8CD5D248172D9C22CB7CF4ED163A3C98C8A3F69C2717EDD3EACB7"
+    },
+    {
+      "Path": "README.md",
+      "SHA256": "3C8A3843EB1A299A462012BE9DD402C7EF7C7D7300FF8137F6A08AF59A78711D"
+    },
+    {
+      "Path": "src\\main\\java\\com\\google\\security\\annotations\\CryptoAnnotation.java",
+      "SHA256": "E99C372C5C4D37D124243432F24526A545A46C801766CB67F2F915E4E5377A54"
+    },
+    {
+      "Path": "src\\main\\java\\com\\google\\security\\annotations\\SuppressInsecureCipherModeCheckerNoReview.java",
+      "SHA256": "2DE5E2454FECA4F3D183121BB2B1A65551F0B02BE87F18BA0C588C63C930FBE1"
+    },
+    {
+      "Path": "src\\main\\java\\com\\google\\security\\annotations\\SuppressInsecureCipherModeCheckerPendingReview.java",
+      "SHA256": "6D90A8BFE47EC8FF7AE9A31F553097889494CB0629D52E6D5F01135D8B2EE78E"
+    },
+    {
+      "Path": "src\\main\\java\\com\\google\\security\\annotations\\SuppressInsecureCipherModeCheckerReviewed.java",
+      "SHA256": "B8EECA627A110380F41DD5DE0EC0F988A4BDF6C18F9A4CBB6AB5F6F7539C57C8"
+    },
+    {
+      "Path": "src\\main\\java\\com\\google\\security\\cryptauth\\lib\\securegcm\\D2DConnectionContext.java",
+      "SHA256": "91F020C56BBADA7E3CBC7E99F8C7927677BA30CB874B652A07A7F725B72A65F9"
+    },
+    {
+      "Path": "src\\main\\java\\com\\google\\security\\cryptauth\\lib\\securegcm\\D2DConnectionContextV0.java",
+      "SHA256": "C736321E35F4011BB22A64BDC013B6AB2E7465F039C13C35C9707860A44CA7FC"
+    },
+    {
+      "Path": "src\\main\\java\\com\\google\\security\\cryptauth\\lib\\securegcm\\D2DConnectionContextV1.java",
+      "SHA256": "106B88856C7430B0DB38347920F617B82050E351DE0569FF9985387D6F02D622"
+    },
+    {
+      "Path": "src\\main\\java\\com\\google\\security\\cryptauth\\lib\\securegcm\\D2DCryptoOps.java",
+      "SHA256": "3064932339FCB8E5A015B456E491405AE215DDE4ABDB5FFE04FE89C23A18A323"
+    },
+    {
+      "Path": "src\\main\\java\\com\\google\\security\\cryptauth\\lib\\securegcm\\D2DDiffieHellmanKeyExchangeHandshake.java",
+      "SHA256": "4CD433A31BFCE56FA92F631FB542F16FC57CCB25CDE8878E719EBD67581ABA55"
+    },
+    {
+      "Path": "src\\main\\java\\com\\google\\security\\cryptauth\\lib\\securegcm\\D2DHandshakeContext.java",
+      "SHA256": "B664353D8884BF3A4FFF093EE28D4D566020727A8EC08297B544BF260B48026B"
+    },
+    {
+      "Path": "src\\main\\java\\com\\google\\security\\cryptauth\\lib\\securegcm\\device_to_device_messages_config.asciipb",
+      "SHA256": "997890B4935E0FE7B480C594C77257FA9DA2FFD02B3E701EA595F77DBC8AC7F6"
+    },
+    {
+      "Path": "src\\main\\java\\com\\google\\security\\cryptauth\\lib\\securegcm\\Ed25519.java",
+      "SHA256": "99A7FE85ED2F2274F3B698D7D7D91370DE8B33B1EB1605FFFE82B27C54AAD8EC"
+    },
+    {
+      "Path": "src\\main\\java\\com\\google\\security\\cryptauth\\lib\\securegcm\\EnrollmentCryptoOps.java",
+      "SHA256": "55CC0725F5BDD8DF8DB1DCCDF459ABFED1B72639850E8F00CB8C60B87454226B"
+    },
+    {
+      "Path": "src\\main\\java\\com\\google\\security\\cryptauth\\lib\\securegcm\\HandshakeException.java",
+      "SHA256": "091AEA405885E8B05A65C5C83015388AC36EF7AB46EBA86432FADE10D3B378C8"
+    },
+    {
+      "Path": "src\\main\\java\\com\\google\\security\\cryptauth\\lib\\securegcm\\KeyEncoding.java",
+      "SHA256": "D6B50F9A72FF178BFC532C8E3EC72B9A5E200F5C0E431FAE7B2208A94CF6A2F7"
+    },
+    {
+      "Path": "src\\main\\java\\com\\google\\security\\cryptauth\\lib\\securegcm\\securegcm_config.asciipb",
+      "SHA256": "8948C19BF4D97B19EA752C74085EA439254614414E854986DDF980AF50E5A88C"
+    },
+    {
+      "Path": "src\\main\\java\\com\\google\\security\\cryptauth\\lib\\securegcm\\SecureGcmConstants.java",
+      "SHA256": "9CD7559E376B5BCB6F8BBC8F224AE5C01208778DB4D70D44C87B8B937B71CCD6"
+    },
+    {
+      "Path": "src\\main\\java\\com\\google\\security\\cryptauth\\lib\\securegcm\\TransportCryptoOps.java",
+      "SHA256": "F1551986C5F5E5BAD50B7C82032A2D61415DEC5EBAB8D3464635FB17C73B4210"
+    },
+    {
+      "Path": "src\\main\\java\\com\\google\\security\\cryptauth\\lib\\securegcm\\Ukey2Handshake.java",
+      "SHA256": "CD3412B68F68C6151FC6F8BBF9232003881D5C8DC67EFDDAE75761C76DE667A6"
+    },
+    {
+      "Path": "src\\main\\java\\com\\google\\security\\cryptauth\\lib\\securemessage\\CryptoOps.java",
+      "SHA256": "9C15943A8DD39A0584EC61172DBB032073C822F329202054A937A312F8BC49CA"
+    },
+    {
+      "Path": "src\\main\\java\\com\\google\\security\\cryptauth\\lib\\securemessage\\PublicKeyProtoUtil.java",
+      "SHA256": "81CA50BC650D55C95436E47FDBB5E00FD38D644DE20F4655CE6A5F02FC552112"
+    },
+    {
+      "Path": "src\\main\\java\\com\\google\\security\\cryptauth\\lib\\securemessage\\SecureMessageBuilder.java",
+      "SHA256": "6B6247188CFDFAFFB4085B3FA7413A40BFA34ED8B124FFB93C409421FA102434"
+    },
+    {
+      "Path": "src\\main\\java\\com\\google\\security\\cryptauth\\lib\\securemessage\\SecureMessageParser.java",
+      "SHA256": "D7B2AA24CC2D12995B219C122E9279C73F2529B72A4C2B0616FF62376D7309CF"
+    },
+    {
+      "Path": "src\\main\\proto\\device_to_device_messages.proto",
+      "SHA256": "E111FCFA7BAD453221E5E9163B6C74BD60BFDC10D5607CD3722B49F07EA6F6A4"
+    },
+    {
+      "Path": "src\\main\\proto\\passwordless_auth_payloads.proto",
+      "SHA256": "D576090414304D3E8650A14B46E192B329A336605B8B2ED60180E97E3032908E"
+    },
+    {
+      "Path": "src\\main\\proto\\proximity_payloads.proto",
+      "SHA256": "2BB0E37D96B5E48557DD68AC73DD86D984148550D26657229142AA190AC63F7F"
+    },
+    {
+      "Path": "src\\main\\proto\\securegcm.proto",
+      "SHA256": "2E7C6B57141A25448F9A014297B38C5DA596F1E5AAF207B14FD2A90E0D21A1F1"
+    },
+    {
+      "Path": "src\\main\\proto\\securemessage.proto",
+      "SHA256": "159721009A11F86F3504335993B72C64195EDA9E3044CBFC29936FBAFCF1544B"
+    },
+    {
+      "Path": "src\\main\\proto\\ukey.proto",
+      "SHA256": "51AFA615EBC1E31E92AFCB23C333ABD480AEFECB7593DA0B5C65F451F7D18613"
+    }
+  ]
+}

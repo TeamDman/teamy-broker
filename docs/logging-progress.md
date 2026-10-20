@@ -18,8 +18,22 @@ The binary boundary emits safe failure records without raw errors, arguments, pa
 
 This is a producer discipline, not automatic general redaction. Never log credentials, mail bodies, tokens, raw CLI arguments or arbitrary panic/error payloads. Choose explicit safe fields and use `skip_all` on instrumentation of sensitive inputs. The subprocess regression uses a synthetic secret marker and verifies that a startup failure cannot disclose it.
 
-Version 1 progress is emitted at INFO under `teamy::progress` with numeric `schema_version`, `completed`, and known `total`; fields also include `event_kind=progress`, `run_id`, `task_id`, optional `parent_task_id`, `operation`, `phase`, `state`, and `unit`. Counts are cumulative within a task. Absent total means unknown. States are started, progress, completed, failed, and cancelled. IDs/labels are producer-owned, never raw user arguments. The top-level command emits started and a terminal outcome; long operations can use `progress::ProgressEvent` for child tasks and phases. Filters may hide progress; it does not replace result or durable state contracts.
+Emit direct tracing events at meaningful call sites. Choose DEBUG for routine dispatch and completion, INFO for useful operation updates, and WARN/ERROR for reviewed failures. Add operation-specific structured fields, such as completed_items, bytes_written, elapsed_ms, or phase, when useful. There is no mandatory progress schema, universal task/run/state vocabulary, or custom caller-location wrapper. Text and NDJSON retain tracing's actual event file/line. Existing command spans still provide timing receipts, and existing expected-duration checks remain warning-only. Logs do not replace command results or typed service status.
 
 There is no GUI or OpenTelemetry dependency. A downstream application can interpret the fields directly.
 
-V1 broker IPC does not transmit diagnostic streams or request log filters. Daemon diagnostics remain in its explicitly configured local sinks; status exposes redacted counters. The safe-message callback classifies errors into reviewed static text without exposing raw chains.
+Broker IPC does not transmit diagnostic streams or request log filters. Daemon diagnostics remain in its explicitly configured local sinks; status exposes redacted counters. The safe-message callback classifies errors into reviewed static text without exposing raw chains.
+
+
+Command runtime expectations describe a command contract (for example, expected
+completion under one second where that contract already exists). They are not
+work progress or an ETA. Actual work may emit item/byte counts, remaining work,
+rates, or evidence-based item/byte ETAs as operation-specific fields. Consumers
+may derive rates and ETAs from suitable measurements. Do not substitute command
+completed=0/1, mandatory percentages, or invented estimates for those measurements.
+
+```rust
+tracing::debug!(items_processed = processed, bytes_written = written, "Batch written");
+```
+
+Use safe fields at the actual operation call site; no helper envelope is required.

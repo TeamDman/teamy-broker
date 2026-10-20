@@ -19,3 +19,27 @@ The parent-approved final template delta was verified against both manifest hash
 - Publication scan: passed seven token/private-data patterns, plus both package license declarations and complete MPL-2.0 text. A pattern scan does not detect every possible secret format.
 
 Interactive native approval and real 1Password desktop authorization remain untested acceptance paths. No production daemon was deployed.
+## Earlier protocol V2 repair checkpoint
+
+At this earlier checkpoint the local consumer integration used the sibling SDK and no repair commit or push had been made; these results are historical.
+
+- Nightly rustfmt check, strict all-target/all-feature workspace Clippy, example builds and all-feature workspace build: passed.
+- Safe workspace tests with extended observability: 60 passed; the 3 native persistence tests remained ignored during this repair.
+- Captured-output regression: the synthetic consumer reached process exit and output EOF while its independently running broker was still alive; the test then stopped and verified the broker.
+- Isolated named-pipe tests distinguish user denial, approval timeout and upstream read failure as typed, redacted errors. Invalid peer failure payloads cannot enter SDK error messages.
+- Protocol V1 and missing V2 capability peers fail compatibility before autostart.
+- Publication pattern and MPL-2.0 scan: passed. No repair publication was performed.
+
+The repair used injected approvals, fake credential adapters and isolated pipe endpoints only. It did not retry interactive credential acquisition or make a consumer API request. The corrected debug binaries were installed without deploying a persistent daemon.
+
+## Source review on 2026-10-20
+
+Independent reviews covered broker authorization/publication, phone pairing and revocation, transport, Android/Java, platform UI and the shared SDK/handoff protocol. The review fixed unbounded post-connect phone control/authorization exchanges by applying the configured request deadline capped at five seconds, with isolated stalled/partial-response regressions.
+
+- Nightly formatting and strict offline all-target/all-feature workspace Clippy passed.
+- Offline all-feature workspace binaries/examples build and all 14 lint-policy fixtures passed.
+- Safe workspace tests with extended observability: 182 passed, 4 native/device tests left ignored. Three logging tests that read the default live broker endpoint were excluded for isolation.
+- Standalone thin SDK tests: 4 passed. Pinned Java pairing tests: 58 passed. Android host policy/lifecycle/input tests passed.
+- Source inventory secret-pattern scan found no token/private-key patterns. Intentional synthetic references, deployment paths and non-secret executable peer allowlists were reviewed separately; captured historical evidence and local device receipts were excluded from the commit.
+
+Tests used synthetic values, isolated pipes, temporary state and loopback peers. No real credentials, account connections, store/scheduler tests, live daemon changes, installation, restart or push occurred. APK packaging and physical-device acceptance were not performed. Interrupted final enrollment acknowledgments can leave one-sided trust and require explicit coordinated revoke/rearm; see [phone approvals](phone-approvals.md).

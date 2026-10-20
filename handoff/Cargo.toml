@@ -1,0 +1,19 @@
+[package]
+name = "teamy-broker-handoff"
+version = "0.1.0"
+edition = "2024"
+license = "MPL-2.0"
+description = "Isolated dummy-only mobile approval protocol for teamy-broker"
+authors = ["TeamDman"]
+repository = "https://github.com/TeamDman/teamy-broker"
+readme = "../docs/mobile-handoff.md"
+keywords = ["credentials", "broker", "android", "handoff"]
+categories = ["authentication"]
+
+[dependencies]
+eyre = "0.6"
+facet = { git = "https://github.com/TeamDman/facet.git", rev = "23ad4dcd0", package = "facet" }
+facet-json = { git = "https://github.com/TeamDman/facet.git", rev = "23ad4dcd0", package = "facet-json" }
+ring = "0.17.14"
+zeroize = "1.8"
+tokio = { version = "1.49", features = ["sync", "time"] }

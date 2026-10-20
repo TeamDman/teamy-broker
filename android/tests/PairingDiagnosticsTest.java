@@ -1,0 +1,2 @@
+package dev.teamy.broker.dummy;
+public final class PairingDiagnosticsTest {public static void main(String[]a){String secret="token 100.1.2.3 ABCD 1234 DCBA 5678";String report=PairingDiagnostics.format(2,PairingDiagnostics.Stage.CLOSED,PairingDiagnostics.parseClose(secret));if(report.contains(secret)||!report.contains("UNKNOWN")||!report.contains("Activity creation: 2"))throw new AssertionError("unsafe lifecycle diagnostics");System.out.println("Fixed lifecycle/close diagnostics reject arbitrary persisted text and distinguish Activity recreation");}}

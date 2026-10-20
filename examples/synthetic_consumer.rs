@@ -41,7 +41,7 @@ async fn main() -> eyre::Result<()> {
         "Synthetic credential consumed ({length} bytes); secret value omitted"
     )?;
     client.purge(Some(secret.lease_id.clone())).await?;
-    client.stop().await?;
+    client.stop_force().await?;
     server.await??;
     Ok(())
 }

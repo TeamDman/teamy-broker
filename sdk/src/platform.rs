@@ -4,3 +4,6 @@ pub(crate) mod cache_reader;
 pub(crate) mod dpapi;
 #[path = "../../src/platform/identity.rs"]
 pub mod identity;
+
+#[path = "../../src/platform/detached_process.rs"]
+pub(crate) mod detached_process;

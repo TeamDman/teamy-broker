@@ -65,3 +65,17 @@ async fn malformed_and_oversized_wire_data_are_rejected() {
         .await
         .unwrap_err();
 }
+
+#[test]
+fn maintenance_force_is_an_explicit_typed_stop_operation() {
+    let AppRequest::Control(request) = parse(&["stop", "--force"])
+        .unwrap()
+        .command
+        .into_request()
+        .unwrap()
+    else {
+        panic!("control expected")
+    };
+    assert_eq!(request.operation, "stop-force");
+    request.validate().unwrap();
+}

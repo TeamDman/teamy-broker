@@ -2,3 +2,4 @@
 /tracy/
 ignore
 *.tracy
+/private-phone-profile.local.json

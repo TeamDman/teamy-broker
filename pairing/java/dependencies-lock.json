@@ -1,0 +1,44 @@
+[
+  {
+    "File": "protobuf-java-3.25.9.jar",
+    "Source": "https://repo.maven.apache.org/maven2/com/google/protobuf/protobuf-java/3.25.9/protobuf-java-3.25.9.jar",
+    "SHA256": "DF18B719CD0C5A11E569013216CC9DE47A0A954ADEEDE685C0F98CE4C42D4D1A",
+    "Bytes": 1876598
+  },
+  {
+    "File": "protoc-3.25.9-windows-x86_64.exe",
+    "Source": "https://repo.maven.apache.org/maven2/com/google/protobuf/protoc/3.25.9/protoc-3.25.9-windows-x86_64.exe",
+    "SHA256": "614F1FA619853CD8AA05817BD6B97EB03DD96D4BDBB79561FA8AE005E44D3973",
+    "Bytes": 11565811
+  },
+  {
+    "File": "guava-33.7.2-android.jar",
+    "Source": "https://repo.maven.apache.org/maven2/com/google/guava/guava/33.7.2-android/guava-33.7.2-android.jar",
+    "SHA256": "B949FE975A32421C1A2633C07A4F1578B462F2F467668AA0A4023C5FF7C4A808",
+    "Bytes": 2982159
+  },
+  {
+    "File": "jsr305-3.0.2.jar",
+    "Source": "https://repo.maven.apache.org/maven2/com/google/code/findbugs/jsr305/3.0.2/jsr305-3.0.2.jar",
+    "SHA256": "766AD2A0783F2687962C8AD74CEECC38A28B9F72A2D085EE438B7813E928D0C7",
+    "Bytes": 19936
+  },
+  {
+    "File": "failureaccess-1.0.3.jar",
+    "Source": "https://repo.maven.apache.org/maven2/com/google/guava/failureaccess/1.0.3/failureaccess-1.0.3.jar",
+    "SHA256": "CBFC3906B19B8F55DD7CFD6DFE0AA4532E834250D7F080BD8D211A3E246B59CB",
+    "Bytes": 10763
+  },
+  {
+    "File": "junit-4.13.2.jar",
+    "Source": "https://repo.maven.apache.org/maven2/junit/junit/4.13.2/junit-4.13.2.jar",
+    "SHA256": "8E495B634469D64FB8ACFA3495A065CBACC8A0FFF55CE1E31007BE4C16DC57D3",
+    "Bytes": 384581
+  },
+  {
+    "File": "hamcrest-core-1.3.jar",
+    "Source": "https://repo.maven.apache.org/maven2/org/hamcrest/hamcrest-core/1.3/hamcrest-core-1.3.jar",
+    "SHA256": "66FDEF91E9739348DF7A096AA384A5685F4E875584CCE89386A7A47251C4D8E9",
+    "Bytes": 45024
+  }
+]
