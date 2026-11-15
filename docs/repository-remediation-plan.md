@@ -1,16 +1,16 @@
 # Broker repository remediation plan
 
-**Plan status:** Active; native acceptance passed, final checkpoint underway
+**Plan status:** Complete
 **Primary implementation root:** `teamy-broker/`, currently branch `main`
 **Last updated:** 2026-11-15
 **Intent audit:** Passed 2026-11-15 against the repository instructions and the full remediation request in this conversation
-**Current focus:** Record the final native repair and verify its committed package (5.3)
+**Current focus:** Remediation complete; user review starts from the cleaned repository
 
 The goal is a broker whose supported workflows, module ownership, configuration and tests can be understood and maintained, with a clean Git tree through reviewed commits. The initial pending migration was checkpointed in `2792563`; subsequent work reviews and repairs the whole repository.
 
 The user has authorized running this remediation to completion, including routine implementation decisions and coherent commits. Cleanup happens within each reviewed subsystem: trace supported behavior, repair and refactor it, remove confirmed obsolete material, validate and commit. Phase 5 is the final completeness audit, not the first opportunity to prune files. Material product or supported-functionality changes still need user direction. Deployment, publication and live phone trust changes remain separate.
 
-Completed parallel ownership: root integrated runtime configuration and this plan; `broker_topology` handled phone extraction, engine lifecycle and obsolete fixtures; `android_feasibility` handled Android, packaging, Windows persistence and maintained documentation; `reference_patterns` handled typed CLI/output, tooling and package verification. The user approved isolated native tests and their cleanup; their final run passes. Root owns the closing checkpoint and acceptance record. Unpublished trial artifacts remain under ignored `ignore/`.
+Completed parallel ownership: root integrated runtime configuration and this plan; `broker_topology` handled phone extraction, engine lifecycle and obsolete fixtures; `android_feasibility` handled Android, packaging, Windows persistence and maintained documentation; `reference_patterns` handled typed CLI/output, tooling and package verification. The user-approved native tests, final committed-source checks and relocated package proof pass. Unpublished trial artifacts remain under ignored `ignore/`.
 
 ## How to update this plan
 
@@ -333,9 +333,11 @@ AAPT2 manifest probes showed minimum SDK 29 with the old flag 26, no override an
 
 **Completion criteria:** One discoverable document owns each operational topic; current instructions agree with code; historical receipts cannot be mistaken for current state or permission. The remediation plan remains the living execution record rather than spawning competing plans.
 
-### [~] 5.3 Complete workflow acceptance and final clean checkpoint
+### [x] 5.3 Complete workflow acceptance and final clean checkpoint
 
-**Completed host/source acceptance:** After final pruning, the maintained `check-all.ps1` passed end to end: exact publication policy fixtures and scan, nightly formatting, all-target/all-feature strict Clippy, independent SDK compilation, both 14-case lint suites, 58 pinned Java tests, Android host policies, all 10 example builds, JVM/Rust TLS, executable manifest and the full workspace suite (255 passed, zero failed, five explicitly ignored). This supersedes the pre-pruning 256-test run. The changed count reflects removed obsolete activation behavior and retained/new fixture-policy coverage. The pure scheduler classifier regression is included. Full and tracked-only publication scans passed; no raw historical/private receipts were committed.
+**Final result:** 256 host Rust tests pass, plus all three explicitly approved native persistence tests and the separately executed package-worker test. The unchanged Java inputs passed 58 pinned-engine tests, Android host policies and JVM/Rust TLS. Formatting, strict Clippy, independent SDK compilation, both lint policies, all 10 example builds, executable manifest and publication checks pass. The final implementation checkpoint is `71e7a0a`; its clean rebuilt package passes relocation and real worker initialization. No required remediation item remains. Device/live-vault and native trigger/crash qualification limits below remain explicit.
+
+**Host checkpoint before the final native repair:** After pruning, the maintained `check-all.ps1` passed end to end: exact publication policy fixtures and scan, nightly formatting, all-target/all-feature strict Clippy, independent SDK compilation, both 14-case lint suites, 58 pinned Java tests, Android host policies, all 10 example builds, JVM/Rust TLS, executable manifest and the full workspace suite (255 passed, zero failed, five explicitly ignored). This superseded the earlier pre-pruning run. The final scheduler regression adds the 256th host test. Full and tracked-only publication scans passed; no raw historical/private receipts were committed.
 
 Implementation checkpoint `bee8946faf7d7e4cc570b824f89b69dd7cb1c0be` follows baseline `2792563`. Both index and working tree were empty afterward. From that clean commit, `cargo build --locked --offline --workspace --bins --examples --features extended_observability` passed, followed by `cargo test --locked --offline --workspace --features extended_observability -- --test-threads=1` (255 passed, five ignored). The built Windows executable reported revision `bee8946` and `worktree clean`.
 
@@ -345,7 +347,9 @@ A fresh 16-artifact package from that committed executable was moved and checked
 
 `cargo test --locked --offline --features extended_observability --test native_backend -- --ignored --test-threads=1` then passed all three tests in 7.69 seconds. They exercised synthetic DPAPI files and Credential Manager entries, registration/removal of exact task IDs, generation-safe replacement cleanup, rejected-publication cleanup, and SDK cache rejection after purge and a fresh isolated broker. Added checked guard completion: each owned `.json`/`.pending` descriptor must already be absent before fallback cleanup, and each empty fixture directory must be removed successfully. Existing task/cache absence assertions remain. No matching-name sweep or lock-file removal was used. The passing native log SHA-256 is `79C84B6766F90F118ACD2EDE3581FDD574C43B8B13B3BE3F85D42568F5CDC82B`.
 
-After the final scheduler/test changes, nightly formatting and strict all-target/all-feature Clippy passed; all bins/examples rebuilt; the complete host workspace suite passed with 256 tests and five default-ignored tests. The native tests passed separately as above. The only implementation delta from `f46b276` is `src/platform/scheduler.rs`, `tests/native_backend.rs` and `tests/support/native_guard.rs`; their final checkpoint/package evidence follows below. Earlier failed runs did not record random IDs, so their post-run absence is not retroactively claimed from guard source alone.
+After the final scheduler/test changes, nightly formatting and strict all-target/all-feature Clippy passed; all bins/examples rebuilt; the complete host workspace suite passed with 256 tests and five default-ignored tests. The native tests passed separately as above. Commit `71e7a0adf5b4cc140f98e7a3bc9ad49aa2f3a610` contains the final scheduler repair and explicit cleanup assertions. Its only implementation delta from `f46b276` is `src/platform/scheduler.rs`, `tests/native_backend.rs` and `tests/support/native_guard.rs`. A clean rebuild of that commit passed both focused scheduler regressions and all three native tests again (8.06 seconds); exact task/cache/metadata/directory cleanup checks passed. Earlier failed runs did not record random IDs, so their post-run absence is not retroactively claimed from guard source alone.
+
+The final 16-artifact package reported revision `71e7a0a` and `worktree clean`, passed version/root/configuration help after relocation, and passed the real Java worker initialization/reaping check from an unrelated directory. Product SHA-256: `C7273C199F5F45C278E415CFE0022378044815F3DD70C71E344C911C8418A1CD`. Final package validation receipt SHA-256: `408B8F5BE868894CEED1B36AEE46D29A3E793B0C5611DBF83ED4223BE83EFFD3`. The repository was clean before and after that proof. The closing documentation-only commit records completion without changing tested implementation inputs.
 
 Native scope limits remain explicit: registered scheduler triggers were removed before firing; the restart fixture purges first and disables startup reconciliation. These tests do not qualify scheduler wake/resume execution or crash recovery. Private-desktop/emulator, physical-device, real vault and deployment workflows remain separate and unrun. No authorization blocker remains.
 
@@ -410,4 +414,4 @@ cargo build --offline -p teamy-broker --example mobile_tls_probe
 - [x] Every owned subsystem has been reviewed against supported workflows and TeamyStyle; retained deviations have concrete reasons and evidence.
 - [x] CLI configuration is discoverable and works without rebuilding; production phone ownership is clear; SDK, daemon and Android adapters share the intended domain semantics.
 - [x] The selected Android approach has recorded feasibility/parity evidence; obsolete code, examples, tests and documentation have reasoned dispositions.
-- [ ] Maintained docs and acceptance results agree with the current source revision. Unverified targets and interactive limits remain explicit, and no required remediation work is silently marked complete.
+- [x] Maintained docs and acceptance results agree with the current source revision. Unverified targets and interactive limits remain explicit, and no required remediation work is silently marked complete.
