@@ -1,6 +1,6 @@
 # Broker repository remediation plan
 
-**Plan status:** Active; implementation committed, awaiting explicit native-test authorization
+**Plan status:** Blocked on explicit native-test authorization; implementation committed
 **Primary implementation root:** `teamy-broker/`, currently branch `main`
 **Last updated:** 2026-11-15
 **Intent audit:** Passed 2026-11-15 against the repository instructions and the full remediation request in this conversation
@@ -333,7 +333,7 @@ AAPT2 manifest probes showed minimum SDK 29 with the old flag 26, no override an
 
 **Completion criteria:** One discoverable document owns each operational topic; current instructions agree with code; historical receipts cannot be mistaken for current state or permission. The remediation plan remains the living execution record rather than spawning competing plans.
 
-### [~] 5.3 Complete workflow acceptance and final clean checkpoint
+### [!] 5.3 Complete workflow acceptance and final clean checkpoint
 
 **Completed host/source acceptance:** After final pruning, the maintained `check-all.ps1` passed end to end: exact publication policy fixtures and scan, nightly formatting, all-target/all-feature strict Clippy, independent SDK compilation, both 14-case lint suites, 58 pinned Java tests, Android host policies, all 10 example builds, JVM/Rust TLS, executable manifest and the full workspace suite (255 passed, zero failed, five explicitly ignored). This supersedes the pre-pruning 256-test run. The changed count reflects removed obsolete activation behavior and retained/new fixture-policy coverage. The pure scheduler classifier regression is included. Full and tracked-only publication scans passed; no raw historical/private receipts were committed.
 
@@ -343,7 +343,7 @@ A fresh 16-artifact package from that committed executable was moved and checked
 
 **Remaining acceptance:** The separately selected three native persistence tests exposed an actual missing-task inspection failure after task cleanup. PowerShell maps the missing COM HRESULT to a `FileNotFoundException` inside `MethodInvocationException`; the classifier accepted only `COMException`. The bounded repair accepts that exact mapped/wrapped case only around exact task operations, retaining other-error rejection. Its pure regression passes. Automatic approval review rejected the native rerun because it required explicit user authorization for scheduler/credential effects; that authorization is pending. No alternate native diagnostic was run after rejection. The old failed run did not record its random IDs; source-level guard cleanup is not proof of post-run absence. Do not sweep matching names to infer ownership.
 
-Resume only after an explicit answer to the pending question: approve the three isolated native tests and cleanup of their exact synthetic objects, or leave native acceptance unverified. With approval, run `cargo test --locked --offline --features extended_observability --test native_backend -- --ignored --test-threads=1`, inspect its results and exact owned cleanup assertions, repair any confirmed failure within that scope, and update this task and the final checkbox. The private-desktop/emulator and physical-device workflows remain separate, unrun acceptance. Keep the goal active until the native question is resolved; all other remediation work is complete.
+Resume only after an explicit answer to the pending question: approve the three isolated native tests and cleanup of their exact synthetic objects, or leave native acceptance unverified. With approval, run `cargo test --locked --offline --features extended_observability --test native_backend -- --ignored --test-threads=1`, inspect its results and exact owned cleanup assertions, repair any confirmed failure within that scope, and update this task and the final checkbox. The private-desktop/emulator and physical-device workflows remain separate, unrun acceptance. The goal is blocked pending this decision after the same authorization condition persisted through three consecutive goal turns; all other remediation work is complete. The latest recheck found a clean tree and no implementation changes since the tested checkpoint.
 
 **Work:** Exercise the declared supported workflows through the CLI, SDK and selected Android integration. Record source revision, commands, target/build identity and observation limits. Verify distribution from outside the source checkout, including required pairing artifacts. Update documentation and this plan, then commit the reviewed result in coherent slices. Any installation, daemon replacement, signing, publication or device trust operation is a distinct concrete action; planning/source cleanup does not imply it occurred.
 
