@@ -3,15 +3,32 @@ use super::approval::Approval;
 use super::grant::Grant;
 use super::lease::Lease;
 use super::storage::Storage;
+use super::work_kind::WorkKind;
 use crate::protocol::AcquireRequest;
+use crate::protocol::ApprovalPreviewDisposition;
+use crate::protocol::ApprovalPreviewResult;
 use crate::protocol::FailureKind;
+use crate::protocol::MAX_SECRET;
+use crate::protocol::Response;
 use crate::protocol::Status;
+use crate::protocol::stop_reason::StopReason;
+use crate::protocol::wire;
 use std::collections::HashMap;
+use std::fmt::Debug;
+use std::fmt::Formatter;
+use std::fmt::Result as FmtResult;
+use std::mem;
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::Mutex as SyncMutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
+use std::time::Instant;
 use tokio::sync::Mutex;
+use tokio::time;
+use zeroize::Zeroize;
 /// Approval and adapter are injectable. The explicit preview never enters acquisition.
 pub struct Engine {
     activity: Arc<super::work_state::WorkState>,
@@ -20,7 +37,7 @@ pub struct Engine {
     storage: Arc<dyn Storage>,
     pub(crate) leases: Mutex<HashMap<String, Lease>>,
     #[cfg(test)]
-    pub(crate) fixture_controller: std::sync::Mutex<Option<Arc<super::phone::Controller>>>,
+    pub(crate) fixture_controller: SyncMutex<Option<Arc<super::phone::Controller>>>,
     gate: Mutex<()>,
     pub stopping: AtomicBool,
     pub stop_ready: AtomicBool,
@@ -28,11 +45,10 @@ pub struct Engine {
     pending: Mutex<Vec<Lease>>,
     epoch: AtomicU64,
     #[cfg(test)]
-    pub(crate) publication_gate:
-        std::sync::Mutex<Option<Arc<super::publication_gate::PublicationGate>>>,
+    pub(crate) publication_gate: SyncMutex<Option<Arc<super::publication_gate::PublicationGate>>>,
 }
-impl std::fmt::Debug for Engine {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Debug for Engine {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         f.write_str("Engine([redacted])")
     }
 }
@@ -49,7 +65,7 @@ impl Engine {
             storage,
             leases: Mutex::new(HashMap::new()),
             #[cfg(test)]
-            fixture_controller: std::sync::Mutex::new(None),
+            fixture_controller: SyncMutex::new(None),
             gate: Mutex::new(()),
             stopping: AtomicBool::new(false),
             stop_ready: AtomicBool::new(false),
@@ -57,7 +73,7 @@ impl Engine {
             pending: Mutex::new(Vec::new()),
             epoch: AtomicU64::new(0),
             #[cfg(test)]
-            publication_gate: std::sync::Mutex::new(None),
+            publication_gate: SyncMutex::new(None),
         }
     }
     /// # Errors
@@ -123,7 +139,7 @@ impl Engine {
             .map(|controller| controller.claim_fixture_permission(&request))
             .transpose()?;
         self.expire().await?;
-        let now = crate::protocol::wire::unix_ms()?;
+        let now = wire::unix_ms()?;
         if fixture_grant.is_none() {
             let leases = self.leases.lock().await;
             if let Some(lease) = leases
@@ -140,8 +156,8 @@ impl Engine {
             }
         }
         let approved = if let Some(grant) = &fixture_grant {
-            let approved = tokio::time::timeout(
-                std::time::Duration::from_secs(65),
+            let approved = time::timeout(
+                Duration::from_secs(65),
                 self.approval.fixture_decision(
                     &request,
                     pid,
@@ -166,7 +182,7 @@ impl Engine {
             || epoch != self.epoch.load(Ordering::SeqCst)
         {
             if let super::approval_decision::ApprovalDecision::Shared(shared) = &approved {
-                shared.resolve(crate::protocol::ApprovalPreviewDisposition::Cancelled);
+                shared.resolve(ApprovalPreviewDisposition::Cancelled);
                 shared.clear_value();
             }
             return Err(FailureKind::RequestCancelled.into());
@@ -180,7 +196,7 @@ impl Engine {
             .await?;
         let lease = Lease::new(request, bytes, approved_at, tick)?;
         eyre::ensure!(
-            lease.valid(crate::protocol::wire::unix_ms()?)
+            lease.valid(wire::unix_ms()?)
                 && !cancel.load(Ordering::SeqCst)
                 && !self.stopping.load(Ordering::SeqCst)
                 && epoch == self.epoch.load(Ordering::SeqCst),
@@ -232,19 +248,13 @@ impl Engine {
             let lease = candidate
                 .as_ref()
                 .ok_or_else(|| eyre::eyre!("publication unavailable"))?;
-            eyre::ensure!(
-                lease.valid(crate::protocol::wire::unix_ms()?),
-                "lease expired"
-            );
+            eyre::ensure!(lease.valid(wire::unix_ms()?), "lease expired");
             self.storage
                 .publish(lease)
                 .map_err(|_redacted| eyre::Report::new(FailureKind::CachePublishFailed))?;
             published = true;
             valid()?;
-            eyre::ensure!(
-                lease.valid(crate::protocol::wire::unix_ms()?),
-                "lease expired"
-            );
+            eyre::ensure!(lease.valid(wire::unix_ms()?), "lease expired");
             leases.insert(
                 lease.id.clone(),
                 candidate
@@ -274,8 +284,8 @@ impl Engine {
         cancel: Arc<AtomicBool>,
         request_work: &super::work_guard::WorkGuard,
     ) -> eyre::Result<super::approval_decision::ApprovalDecision> {
-        let approved = tokio::time::timeout(
-            std::time::Duration::from_secs(65),
+        let approved = time::timeout(
+            Duration::from_secs(65),
             self.approval.decision(
                 request,
                 pid,
@@ -304,9 +314,9 @@ impl Engine {
         approved: super::approval_decision::ApprovalDecision,
         request: &AcquireRequest,
         request_work: &super::work_guard::WorkGuard,
-    ) -> eyre::Result<(zeroize::Zeroizing<Vec<u8>>, u64, std::time::Instant)> {
-        let mut approved_at = crate::protocol::wire::unix_ms()?;
-        let mut tick = std::time::Instant::now();
+    ) -> eyre::Result<(zeroize::Zeroizing<Vec<u8>>, u64, Instant)> {
+        let mut approved_at = wire::unix_ms()?;
+        let mut tick = Instant::now();
         let bytes = match approved {
             super::approval_decision::ApprovalDecision::DesktopRead => {
                 self.read_upstream(request, request_work).await?
@@ -325,7 +335,7 @@ impl Engine {
             }
             super::approval_decision::ApprovalDecision::Supplied(bytes) => {
                 eyre::ensure!(
-                    !bytes.is_empty() && bytes.len() <= crate::protocol::MAX_SECRET,
+                    !bytes.is_empty() && bytes.len() <= MAX_SECRET,
                     "supplied value rejected"
                 );
                 bytes
@@ -357,7 +367,7 @@ impl Engine {
         &self,
         pid: u32,
         cancel: Arc<AtomicBool>,
-    ) -> eyre::Result<crate::protocol::ApprovalPreviewResult> {
+    ) -> eyre::Result<ApprovalPreviewResult> {
         let request_work = self.activity.request()?;
         let _gate = self
             .gate
@@ -373,8 +383,8 @@ impl Engine {
             !self.stopping.load(Ordering::SeqCst) && !cancel.load(Ordering::SeqCst),
             FailureKind::RequestCancelled
         );
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(65),
+        let result = time::timeout(
+            Duration::from_secs(65),
             self.approval.preview(
                 pid,
                 Arc::clone(&cancel),
@@ -393,7 +403,6 @@ impl Engine {
     async fn retire(&self, mut lease: Lease) {
         let _work = self.activity.phase(super::work_kind::WorkKind::Storage);
         if self.storage.remove(&lease).is_err() {
-            use zeroize::Zeroize;
             lease.secret.zeroize();
             self.failures.fetch_add(1, Ordering::SeqCst);
             self.pending.lock().await.push(lease);
@@ -433,7 +442,7 @@ impl Engine {
     /// Returns an error on invalid configuration, expired leases, denial, or failed I/O.
     pub async fn expire(&self) -> eyre::Result<()> {
         let _work = self.activity.phase(super::work_kind::WorkKind::Storage);
-        let now = crate::protocol::wire::unix_ms()?;
+        let now = wire::unix_ms()?;
         let expired = {
             let mut leases = self.leases.lock().await;
             let ids: Vec<_> = leases
@@ -452,7 +461,7 @@ impl Engine {
         Ok(())
     }
     async fn retry_cleanup(&self) {
-        let old = std::mem::take(&mut *self.pending.lock().await);
+        let old = mem::take(&mut *self.pending.lock().await);
         for lease in old {
             self.retire(lease).await;
         }
@@ -461,12 +470,10 @@ impl Engine {
     ///
     /// Returns an error on invalid configuration, expired leases, denial, or failed I/O.
     pub async fn status(&self) -> eyre::Result<Status> {
-        use super::work_kind::WorkKind;
-        use crate::protocol::stop_reason::StopReason;
         let leases = self.leases.lock().await;
         let pending = self.pending.lock().await;
         let work = self.activity.snapshot();
-        let now = crate::protocol::wire::unix_ms()?;
+        let now = wire::unix_ms()?;
         let active_leases =
             u64::try_from(leases.values().filter(|lease| lease.valid(now)).count())?;
         let pending_cleanup = u64::try_from(pending.len())?;
@@ -511,7 +518,7 @@ impl Engine {
     pub async fn stop(&self, force: bool) -> eyre::Result<()> {
         let leases = self.leases.lock().await;
         let pending = self.pending.lock().await;
-        let now = crate::protocol::wire::unix_ms()?;
+        let now = wire::unix_ms()?;
         self.activity.admit_stop(
             force,
             leases.values().any(|lease| lease.valid(now)),
@@ -529,24 +536,21 @@ impl Engine {
     /// # Errors
     ///
     /// Returns an error if the lease expired, was purged, or belongs to a former broker instance.
-    pub async fn validate_lease(&self, id: &str) -> eyre::Result<crate::protocol::Response> {
+    pub async fn validate_lease(&self, id: &str) -> eyre::Result<Response> {
         self.expire().await?;
         let leases = self.leases.lock().await;
         let lease = leases
             .get(id)
             .ok_or_else(|| eyre::eyre!("lease unavailable"))?;
-        eyre::ensure!(
-            lease.valid(crate::protocol::wire::unix_ms()?),
-            "lease expired"
-        );
-        Ok(crate::protocol::Response {
+        eyre::ensure!(lease.valid(wire::unix_ms()?), "lease expired");
+        Ok(Response {
             code: "ok".into(),
             lease_id: Some(lease.id.clone()),
             expires_unix_ms: Some(lease.expires),
             remaining_millis: Some(u64::try_from(
                 lease
                     .deadline
-                    .saturating_duration_since(std::time::Instant::now())
+                    .saturating_duration_since(Instant::now())
                     .as_millis(),
             )?),
             status: None,

@@ -2,7 +2,11 @@ use super::pairing_prompt_diagnostics::PairingPromptDiagnostics;
 use super::pairing_prompt_state::PairingPromptState;
 use crate::platform::approval_attention::DialogAttention;
 use crate::platform::approval_presentation::DialogPresentation;
+use crate::platform::approval_preview_capture;
 use crate::protocol::ApprovalPreviewEventKind;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use windows_sys::Win32::Foundation::HWND;
 #[derive(Debug)]
 pub(super) struct PairingPromptContext<'a> {
@@ -11,8 +15,8 @@ pub(super) struct PairingPromptContext<'a> {
     pub attention: DialogAttention,
     pub diagnostics: Option<&'a PairingPromptDiagnostics>,
     pub presentation_enabled: bool,
-    pub trace: Option<std::sync::Arc<super::preview_phase::PreviewTrace>>,
-    pub visible_reported: std::sync::atomic::AtomicBool,
+    pub trace: Option<Arc<super::preview_phase::PreviewTrace>>,
+    pub visible_reported: AtomicBool,
 }
 impl PairingPromptContext<'_> {
     pub fn record(&self, hwnd: HWND, kind: ApprovalPreviewEventKind, button: Option<i32>) {
@@ -22,17 +26,12 @@ impl PairingPromptContext<'_> {
                 .lock()
                 .expect("synthetic pairing event lock");
             if events.len() < 8 {
-                events.push(crate::platform::approval_preview_capture::capture(
-                    hwnd, kind, button,
-                ));
+                events.push(approval_preview_capture::capture(hwnd, kind, button));
             }
         }
     }
     fn visible(&self, trace: &super::preview_phase::PreviewTrace) {
-        if !self
-            .visible_reported
-            .swap(true, std::sync::atomic::Ordering::AcqRel)
-        {
+        if !self.visible_reported.swap(true, Ordering::AcqRel) {
             trace.emit(
                 super::preview_phase::PreviewPhase::DialogVisible,
                 super::preview_phase::PreviewMetadata {

@@ -58,7 +58,21 @@ public final class BrokerActivity extends Activity {
         Button settingsToggle=button(layout,"Connection & identity settings",()->settings.setVisibility(settings.getVisibility()==android.view.View.VISIBLE?android.view.View.GONE:android.view.View.VISIBLE));
         settings=card(layout);settings.setVisibility(android.view.View.GONE);layout=settings;
         text(layout,"Pair once with this desktop over Tailscale. Compare all four groups and Match on BOTH screens. Saved pairing defaults to harmless previews. Credential actions require one exact, separately enabled request permission. Background connection uses an ongoing service notification. Android sleep/OEM restrictions may delay delivery.",16);
-        text(layout,PrivatePhoneConfig.CONFIGURED ? "Desktop "+PrivatePhoneConfig.DESKTOP+":"+PrivatePhoneConfig.PORT+" · "+PrivatePhoneConfig.DESKTOP_NODE+"\nPhone "+PrivatePhoneConfig.PHONE+" · "+PrivatePhoneConfig.PHONE_NODE : "Private phone configuration is missing from this build.",14);
+        text(layout,"Private connection settings are stored only in this app. Stop the approval connection before saving. To change a paired peer, forget the phone identity and run desktop phone-revoke first.",14);
+        EditText desktopAddress=profileInput(layout,"Desktop Tailscale IPv4 address");
+        EditText phoneAddress=profileInput(layout,"Phone Tailscale IPv4 address");
+        EditText desktopNode=profileInput(layout,"Desktop Tailscale node ID");
+        EditText phoneNode=profileInput(layout,"Phone Tailscale node ID");
+        TextView configurationStatus=text(layout,"",14);
+        button(layout,"Save private connection settings",()->{
+            if(busy||pairing!=null||PhoneService.snapshot().service!=null){configurationStatus.setText("Stop pairing and the approval connection before changing settings.");return;}
+            try{
+                PrivatePhoneConfig profile=new PrivatePhoneConfig(desktopAddress.getText().toString(),phoneAddress.getText().toString(),desktopNode.getText().toString(),phoneNode.getText().toString());
+                PhoneConfigStore.save(this,profile);
+                desktopAddress.getText().clear();phoneAddress.getText().clear();desktopNode.getText().clear();phoneNode.getText().clear();
+                configurationStatus.setText("Private connection settings saved.");
+            }catch(Exception unavailable){configurationStatus.setText("Connection settings rejected or unavailable. A paired peer must be forgotten before its settings can change.");}
+        });
         pair=button(layout,"Pair phone · run desktop phone-pair first",()->pair(false));
         replace=button(layout,"Replace phone identity · desktop replacement window",()->pair(true));
         text(layout,"Replacement creates a TLS-compatible hardware key after your explicit tap. Compare and Match again. Current key and pairing remain saved until authenticated enrollment completes; the previous identity is retained for coordinated recovery.",14);
@@ -76,6 +90,7 @@ public final class BrokerActivity extends Activity {
         match=button(layout,"Match · all four groups agree",()->match());reject=button(layout,"Reject pairing",()->{closeReason(PairingDiagnostics.Close.EXPLICIT_REJECT);endPair();});
         button(layout,"Enable notifications",()->notifications.enable());
         start=button(layout,"Start approval connection",()->{
+            try{PhoneConfigStore.load(this);}catch(Exception unavailable){status.setText("Configure private connection settings first.");return;}
             android.app.NotificationManager manager=getSystemService(android.app.NotificationManager.class);
             if(!manager.areNotificationsEnabled()||(Build.VERSION.SDK_INT>=33&&checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)!=android.content.pm.PackageManager.PERMISSION_GRANTED)){notifications.enable();status.setText("Enable notifications, then tap Start again.");return;}
             android.app.NotificationChannel channel=manager.getNotificationChannel("approval-connection");
@@ -89,6 +104,7 @@ public final class BrokerActivity extends Activity {
     private void clearInput(){if(input!=null)input.getText().clear();}
     private void send(){String id=selected;if(id==null)return;try(ApprovalInput value=new ApprovalInput(input.getText())){if(!CredentialInputHandoff.send(value,this::clearInput,()->getSystemService(android.view.autofill.AutofillManager.class).cancel(),bytes->PhoneService.supply(id,bytes)))status.setText("Request unavailable; value cleared.");}catch(Exception ignored){clearInput();status.setText("Unable to send. Value cleared; re-enter only while this request is live.");}}
     private TextView text(LinearLayout layout,String value,int size){TextView view=new TextView(this);view.setText(value);view.setTextSize(size);view.setTextColor(android.graphics.Color.rgb(24,36,55));view.setPadding(0,12,0,12);view.setSaveEnabled(false);layout.addView(view);return view;}
+    private EditText profileInput(LinearLayout layout,String hint){EditText view=new EditText(this);view.setHint(hint);view.setSingleLine(true);view.setSaveEnabled(false);view.setImportantForAutofill(android.view.View.IMPORTANT_FOR_AUTOFILL_NO);view.setImeOptions(android.view.inputmethod.EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING);layout.addView(view);return view;}
     private Button button(LinearLayout layout,String value,Runnable action){Button button=new Button(this);button.setText(value);button.setMinHeight((int)(48*getResources().getDisplayMetrics().density));button.setAllCaps(false);button.setOnClickListener(v->action.run());button.setSaveEnabled(false);layout.addView(button);return button;}
     private void render(){
         if(pairing!=null&&!pairing.live(false)){closeReason(pairing.closeReason()==PairingDiagnostics.Close.NONE?PairingDiagnostics.Close.DEADLINE:pairing.closeReason());endPair();return;}
@@ -105,7 +121,7 @@ public final class BrokerActivity extends Activity {
         if(!busy&&pairing==null)status.setText((PhoneIdentity.paired(this)?"Paired · ":"Unpaired · ")+PhoneService.snapshot().status);
     }
     private void submit(String decision){String id=selected;if(id==null||!PhoneService.submit(id,decision))status.setText("Request unavailable; wait for authoritative state.");}
-    private void pair(boolean replacement){if(busy||pairing!=null||PhoneService.snapshot().service!=null)return;final String alias=PhoneIdentity.TLS_ALIAS;PairingClient channel=new PairingClient(true,alias);channel.foreground(foreground);pairing=channel;busy=true;stage(PairingDiagnostics.Stage.CONNECTING);int epoch=generation;comparison.setText("Connecting for persistent no-vault enrollment.");render();
+    private void pair(boolean replacement){if(busy||pairing!=null||PhoneService.snapshot().service!=null)return;final PrivatePhoneConfig profile;try{profile=PhoneConfigStore.load(this);}catch(Exception ignored){comparison.setText("Configure private connection settings first.");return;}final String alias=PhoneIdentity.TLS_ALIAS;PairingClient channel=new PairingClient(true,alias,profile);channel.foreground(foreground);pairing=channel;busy=true;stage(PairingDiagnostics.Stage.CONNECTING);int epoch=generation;comparison.setText("Connecting for persistent no-vault enrollment.");render();
         PairingForeground.start(this,channel,()->actor.execute(()->{try{ConnectionFailure.at(ConnectionFailure.Phase.PHONE_KEY,()->PhoneIdentity.certificate(alias));channel.connect();runOnUiThread(()->{if(foreground&&epoch==generation){busy=false;stage(PairingDiagnostics.Stage.COMPARISON);comparison.setText("PERSISTENT NO-VAULT PAIRING\n"+channel.comparison+"\nCompare both screens before Match.");render();}});}catch(Exception e){final String failure=e instanceof ConnectionFailure?"Hardware TLS key self-test unavailable · "+((ConnectionFailure)e).phase.name()+"/"+((ConnectionFailure)e).category.name()+". Saved identity retained.":"Pairing unavailable. Check desktop phone-status and arm a fresh window.";runOnUiThread(()->{if(epoch==generation){closeReason(channel.closeReason());endPair();comparison.setText(failure);}});}}),()->{if(pairing==channel&&epoch==generation){closeReason(channel.closeReason());endPair();comparison.setText("Enable notifications, then pair again. Temporary pairing uses the approval connection notification.");}});
     }
     private void match(){PairingClient channel=pairing;if(channel==null||busy)return;busy=true;stage(PairingDiagnostics.Stage.CONFIRMING);int epoch=generation;render();actor.execute(()->{try{channel.match();stage(PairingDiagnostics.Stage.ENROLLING);channel.enroll(this);runOnUiThread(()->{if(foreground&&epoch==generation){closeReason(PairingDiagnostics.Close.ENROLLED);endPair();comparison.setText("Persistent no-vault relationship saved. Enable notifications, then Start approval connection.");}});}catch(Exception e){runOnUiThread(()->{if(epoch==generation){closeReason(channel.closeReason());endPair();comparison.setText("Enrollment incomplete. Inspect desktop status; revoke and re-pair if needed.");}});}finally{channel.destroyEngine();}});}

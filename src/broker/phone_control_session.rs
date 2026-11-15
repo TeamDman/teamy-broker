@@ -2,7 +2,9 @@ use crate::protocol::Hello;
 use crate::protocol::Request;
 use crate::protocol::Response;
 use crate::protocol::{self};
+use std::time::Duration;
 use tokio::net::windows::named_pipe::NamedPipeServer;
+use tokio::time;
 pub(super) async fn execute(
     pipe: &mut NamedPipeServer,
     peer: &Hello,
@@ -39,11 +41,8 @@ pub(crate) async fn execute_with(
             return protocol::wire::write(pipe, &snapshot).await;
         }
         let accepted = if request.operation == "phone-pair-confirm" {
-            let code: protocol::pairing_comparison::PairingCode = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                protocol::wire::read(pipe),
-            )
-            .await??;
+            let code: protocol::pairing_comparison::PairingCode =
+                time::timeout(Duration::from_secs(5), protocol::wire::read(pipe)).await??;
             eyre::ensure!(code.comparison.len() <= 128, "comparison rejected");
             attempt.confirm(id, &code.comparison)?
         } else {

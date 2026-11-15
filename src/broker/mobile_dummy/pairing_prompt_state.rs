@@ -1,14 +1,20 @@
+use crate::broker::phone::pairing_confirmation::Attempt;
+use std::fmt::Debug;
+use std::fmt::Formatter;
+use std::fmt::Result as FmtResult;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+use std::time::Instant;
 use zeroize::Zeroizing;
 pub(super) struct PairingPromptState {
     pub code: Zeroizing<String>,
-    pub confirmation: Option<Arc<crate::broker::phone::pairing_confirmation::Attempt>>,
-    pub until: std::time::Instant,
+    pub confirmation: Option<Arc<Attempt>>,
+    pub until: Instant,
     pub closed: Arc<AtomicBool>,
 }
-impl std::fmt::Debug for PairingPromptState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Debug for PairingPromptState {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         f.write_str("PairingPromptState([redacted])")
     }
 }
@@ -17,9 +23,7 @@ impl PairingPromptState {
         if self.confirmation.as_ref().is_some_and(|a| a.finished()) {
             return true;
         }
-        if self.closed.load(std::sync::atomic::Ordering::Acquire)
-            || std::time::Instant::now() >= self.until
-        {
+        if self.closed.load(Ordering::Acquire) || Instant::now() >= self.until {
             return true;
         }
         present();

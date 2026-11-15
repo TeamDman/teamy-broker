@@ -1,20 +1,60 @@
 use super::*;
+use crate::broker::approval::Approval;
+use crate::broker::approval_decision::ApprovalDecision;
+use crate::broker::credential_grant::CredentialGrant;
+use crate::broker::lease::Lease;
+use crate::broker::publication_gate::PublicationGate;
+use crate::broker::server;
+use crate::broker::synthetic_credential_fixture;
+use crate::broker::synthetic_credential_fixture::INPUT;
+use crate::broker::synthetic_credential_fixture::PROVIDER;
+use crate::broker::work_guard::WorkGuard;
+use crate::platform::pipe_security;
+use crate::protocol::Backend;
+use crate::protocol::CAPABILITIES;
+use crate::protocol::Hello;
+use crate::protocol::Request;
+use crate::protocol::VERSION;
+use crate::protocol::pairing_comparison::PairingCode;
+use crate::protocol::phone_status::PhoneFailureCategory;
+use crate::protocol::phone_status::PhonePhase;
+use crate::protocol::phone_status::PhoneTransportKind;
+use crate::sdk::Client;
+use ::time::Duration as CalendarDuration;
+use ::time::OffsetDateTime;
+use message::Message;
+use rustls::crypto::ring;
 use rustls::pki_types::CertificateDer;
 use rustls::pki_types::PrivatePkcs8KeyDer;
 use rustls::pki_types::ServerName;
+use rustls::version::TLS13;
+use std::env;
+use std::fs;
+use std::future;
+use std::io::Error as IoError;
+use std::io::ErrorKind;
+use std::iter;
+use std::path::PathBuf;
+use std::pin::Pin;
+use tokio::io;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
-pub(super) struct Fixture(
-    std::path::PathBuf,
-    Arc<crate::broker::shared_preview::SharedPreviewHub>,
-);
+use tokio::io::DuplexStream;
+use tokio::net::TcpListener;
+use tokio::net::TcpStream;
+use tokio::net::windows::named_pipe::NamedPipeServer;
+use tokio::sync::oneshot;
+use tokio::task;
+use tokio::task::JoinHandle;
+use tokio_rustls::client::TlsStream;
+pub(super) struct Fixture(PathBuf, Arc<SharedPreviewHub>);
 impl Fixture {
     pub(super) fn new() -> Self {
-        let dir = std::env::temp_dir().join(format!("teamy-phone-test-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir(&dir).unwrap();
+        let dir = env::temp_dir().join(format!("teamy-phone-test-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&dir).unwrap();
         Self(
             dir.join("identity.dpapi"),
-            Arc::new(crate::broker::shared_preview::SharedPreviewHub::default()),
+            Arc::new(SharedPreviewHub::default()),
         )
     }
     pub(super) fn controller(&self) -> Arc<Controller> {
@@ -23,9 +63,7 @@ impl Fixture {
         Arc::new(Controller {
             store,
             hub: PreviewHub::Isolated(Arc::clone(&self.1)),
-            credential_hub: PreviewHub::Isolated(Arc::new(
-                crate::broker::shared_preview::SharedPreviewHub::default(),
-            )),
+            credential_hub: PreviewHub::Isolated(Arc::new(SharedPreviewHub::default())),
             record: Mutex::new(record),
             pair_until: Mutex::new(None),
             confirmation: Mutex::new(None),
@@ -34,20 +72,20 @@ impl Fixture {
             listener: AtomicBool::new(false),
             runtime: AtomicU8::new(0),
             actor_active: AtomicBool::new(false),
-            diagnostic: Mutex::new(crate::protocol::phone_status::PhoneDiagnostic::default()),
+            diagnostic: Mutex::new(PhoneDiagnostic::default()),
         })
     }
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-        let _ = std::fs::remove_dir(self.0.parent().unwrap());
+        let _ = fs::remove_file(&self.0);
+        let _ = fs::remove_dir(self.0.parent().unwrap());
     }
 }
 fn phone() -> (Vec<u8>, Vec<u8>) {
     let key = rcgen::KeyPair::generate().unwrap();
     let mut params = rcgen::CertificateParams::new(vec!["phone.invalid".into()]).unwrap();
-    params.not_before = time::OffsetDateTime::now_utc() - time::Duration::days(1);
+    params.not_before = OffsetDateTime::now_utc() - CalendarDuration::days(1);
     params.key_usages = vec![rcgen::KeyUsagePurpose::DigitalSignature];
     let cert = params.self_signed(&key).unwrap();
     (cert.der().to_vec(), key.serialize_der())
@@ -61,7 +99,7 @@ fn protected_relationship_survives_restart_and_revoke() {
     let record = controller.record().unwrap().unwrap();
     let (certificate, _key) = phone();
     controller.enroll(&record.generation, &certificate).unwrap();
-    let encrypted = std::fs::read(&fixture.0).unwrap();
+    let encrypted = fs::read(&fixture.0).unwrap();
     assert!(
         !encrypted
             .windows(record.private_key.len())
@@ -81,12 +119,11 @@ fn protected_relationship_survives_restart_and_revoke() {
             .unwrap()
     );
     assert!(!fixture.controller().status().unwrap().paired);
-    std::fs::write(&fixture.0, b"tampered").unwrap();
+    fs::write(&fixture.0, b"tampered").unwrap();
     drop(Store(fixture.0.clone()).load().unwrap_err());
 }
 #[test]
 fn strict_scope_version_sequence_session_and_preview_allowlist() {
-    use message::Message;
     let mut message = Message {
         version: 1,
         scope: SCOPE.into(),
@@ -119,8 +156,8 @@ fn client_config(record: &Record, certificate: Vec<u8>, key: Vec<u8>) -> rustls:
     roots
         .add(CertificateDer::from(record.certificate.clone()))
         .unwrap();
-    rustls::ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-        .with_protocol_versions(&[&rustls::version::TLS13])
+    rustls::ClientConfig::builder_with_provider(Arc::new(ring::default_provider()))
+        .with_protocol_versions(&[&TLS13])
         .unwrap()
         .with_root_certificates(roots)
         .with_client_auth_cert(
@@ -134,26 +171,20 @@ async fn connect(
     record: Record,
     certificate: Vec<u8>,
     key: Vec<u8>,
-) -> eyre::Result<(
-    tokio_rustls::client::TlsStream<tokio::net::TcpStream>,
-    tokio::task::JoinHandle<eyre::Result<()>>,
-)> {
+) -> eyre::Result<(TlsStream<TcpStream>, JoinHandle<eyre::Result<()>>)> {
     let config = client_config(&record, certificate, key);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let client = tokio::net::TcpStream::connect(listener.local_addr()?).await?;
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let client = TcpStream::connect(listener.local_addr()?).await?;
     let (server, _) = listener.accept().await?;
     drop(listener);
     let task = tokio::spawn(transport::test_connection(server, controller, record));
     let tls = tokio_rustls::TlsConnector::from(Arc::new(config))
-        .connect(
-            ServerName::IpAddress(teamy_broker_handoff::phone_config::DESKTOP.into()),
-            client,
-        )
+        .connect(ServerName::IpAddress(Ipv4Addr::LOCALHOST.into()), client)
         .await?;
     Ok((tls, task))
 }
 async fn send(
-    tls: &mut tokio_rustls::client::TlsStream<tokio::net::TcpStream>,
+    tls: &mut TlsStream<TcpStream>,
     session: &str,
     sequence: u64,
     id: Option<String>,
@@ -168,9 +199,9 @@ async fn send(
         request_id: id,
         decision: decision.map(str::to_string),
     };
-    crate::protocol::wire::write(tls, &message).await?;
+    wire::write(tls, &message).await?;
     tls.flush().await?;
-    crate::protocol::wire::read(tls).await
+    wire::read(tls).await
 }
 #[tokio::test]
 async fn tls_reconnect_reconcile_stale_replay_and_live_revocation() -> eyre::Result<()> {
@@ -188,7 +219,7 @@ async fn tls_reconnect_reconcile_stale_replay_and_live_revocation() -> eyre::Res
         key.clone(),
     )
     .await?;
-    let hello: message::Reply = crate::protocol::wire::read(&mut tls).await?;
+    let hello: message::Reply = wire::read(&mut tls).await?;
     let hub = &fixture.1;
     approve_then_reconcile(&mut tls, &hello.session_id, hub).await?;
     drop(tls);
@@ -201,7 +232,7 @@ async fn tls_reconnect_reconcile_stale_replay_and_live_revocation() -> eyre::Res
         key.clone(),
     )
     .await?;
-    let next: message::Reply = crate::protocol::wire::read(&mut tls).await?;
+    let next: message::Reply = wire::read(&mut tls).await?;
     assert_ne!(hello.session_id, next.session_id);
     assert!(next.pending.is_none());
     let request = hub.begin(Arc::new(AtomicBool::new(false)))?;
@@ -209,10 +240,7 @@ async fn tls_reconnect_reconcile_stale_replay_and_live_revocation() -> eyre::Res
         .await?
         .pending
         .unwrap();
-    hub.decide(
-        &pending.request_id,
-        crate::protocol::ApprovalPreviewDisposition::DeniedTest,
-    )?;
+    hub.decide(&pending.request_id, ApprovalPreviewDisposition::DeniedTest)?;
     assert!(
         send(&mut tls, &next.session_id, 2, None, None)
             .await?
@@ -221,7 +249,7 @@ async fn tls_reconnect_reconcile_stale_replay_and_live_revocation() -> eyre::Res
     );
     assert_eq!(
         request.outcome(),
-        Some(crate::protocol::ApprovalPreviewDisposition::DeniedTest)
+        Some(ApprovalPreviewDisposition::DeniedTest)
     );
     drop(
         send(&mut tls, &hello.session_id, 3, None, None)
@@ -236,7 +264,7 @@ async fn tls_reconnect_reconcile_stale_replay_and_live_revocation() -> eyre::Res
         key,
     )
     .await?;
-    let final_hello: message::Reply = crate::protocol::wire::read(&mut tls).await?;
+    let final_hello: message::Reply = wire::read(&mut tls).await?;
     restarted.revoke()?;
     drop(
         send(&mut tls, &final_hello.session_id, 1, None, None)
@@ -270,7 +298,7 @@ async fn unpaired_revoked_and_different_certificate_rejected() -> eyre::Result<(
         other_key,
     )
     .await?;
-    let response: eyre::Result<message::Reply> = crate::protocol::wire::read(&mut tls).await;
+    let response: eyre::Result<message::Reply> = wire::read(&mut tls).await;
     drop(response.unwrap_err());
     drop(task.await?.unwrap_err());
     controller.revoke()?;
@@ -285,9 +313,9 @@ async fn unpaired_revoked_and_different_certificate_rejected() -> eyre::Result<(
 }
 
 async fn approve_then_reconcile(
-    tls: &mut tokio_rustls::client::TlsStream<tokio::net::TcpStream>,
+    tls: &mut TlsStream<TcpStream>,
     session: &str,
-    hub: &crate::broker::shared_preview::SharedPreviewHub,
+    hub: &SharedPreviewHub,
 ) -> eyre::Result<()> {
     let request = hub.begin(Arc::new(AtomicBool::new(false)))?;
     let pending = send(tls, session, 1, None, None).await?.pending.unwrap();
@@ -305,7 +333,7 @@ async fn approve_then_reconcile(
     );
     assert_eq!(
         request.outcome(),
-        Some(crate::protocol::ApprovalPreviewDisposition::ApprovedTest)
+        Some(ApprovalPreviewDisposition::ApprovedTest)
     );
     assert_eq!(
         send(
@@ -341,9 +369,9 @@ async fn offline_pending_survives_connection_loss_but_cancellation_reconciles() 
         key.clone(),
     )
     .await?;
-    let hello: message::Reply = crate::protocol::wire::read(&mut tls).await?;
+    let hello: message::Reply = wire::read(&mut tls).await?;
     let pending = hello.pending.unwrap();
-    let remaining = pending.expires_unix_ms - crate::protocol::wire::unix_ms()?;
+    let remaining = pending.expires_unix_ms - wire::unix_ms()?;
     assert!(remaining > 0 && remaining <= 60000);
     drop(tls);
     drop(task.await?.unwrap_err());
@@ -357,7 +385,7 @@ async fn offline_pending_survives_connection_loss_but_cancellation_reconciles() 
         key,
     )
     .await?;
-    let next: message::Reply = crate::protocol::wire::read(&mut tls).await?;
+    let next: message::Reply = wire::read(&mut tls).await?;
     assert_eq!(next.pending.unwrap().request_id, pending.request_id);
     cancellation.store(true, Ordering::Release);
     assert!(
@@ -380,7 +408,7 @@ async fn offline_pending_survives_connection_loss_but_cancellation_reconciles() 
     );
     assert_eq!(
         request.outcome(),
-        Some(crate::protocol::ApprovalPreviewDisposition::Cancelled)
+        Some(ApprovalPreviewDisposition::Cancelled)
     );
     drop(tls);
     drop(task.await?.unwrap_err());
@@ -401,9 +429,9 @@ async fn listener_guard_clears_status_on_error_and_abort() -> eyre::Result<()> {
     assert!(!controller.status()?.listener);
     assert_eq!(
         controller.status()?.connection,
-        crate::protocol::phone_status::PhoneConnectionState::Disconnected
+        PhoneConnectionState::Disconnected
     );
-    let (ready, observed) = tokio::sync::oneshot::channel();
+    let (ready, observed) = oneshot::channel();
     let owned = Arc::clone(&controller);
     let task = tokio::spawn(super::resident::guarded(
         Arc::clone(&controller),
@@ -411,7 +439,7 @@ async fn listener_guard_clears_status_on_error_and_abort() -> eyre::Result<()> {
             owned.listener.store(true, Ordering::Release);
             owned.connected.store(true, Ordering::Release);
             let _ = ready.send(());
-            std::future::pending().await
+            future::pending().await
         },
     ));
     observed.await?;
@@ -420,7 +448,7 @@ async fn listener_guard_clears_status_on_error_and_abort() -> eyre::Result<()> {
     assert!(!controller.status()?.listener);
     assert_eq!(
         controller.status()?.connection,
-        crate::protocol::phone_status::PhoneConnectionState::Disconnected
+        PhoneConnectionState::Disconnected
     );
     Ok(())
 }
@@ -436,7 +464,7 @@ fn runtime_guard_retains_failure_and_releases_actor_ownership() {
     drop(guard);
     assert_eq!(
         controller.status().unwrap().runtime,
-        crate::protocol::phone_status::PhoneRuntimeState::Failed
+        PhoneRuntimeState::Failed
     );
     assert!(!controller.status().unwrap().listener);
     assert!(!controller.actor_active.load(Ordering::Acquire));
@@ -450,7 +478,7 @@ fn enrollment_window_is_five_minutes_without_renewal_or_double_arm() {
     controller.arm().unwrap();
     let deadline = controller.pair_until.lock().unwrap().unwrap();
     let remaining = deadline.saturating_duration_since(Instant::now());
-    assert!(remaining > std::time::Duration::from_secs(299) && remaining <= ENROLLMENT_WINDOW);
+    assert!(remaining > Duration::from_secs(299) && remaining <= ENROLLMENT_WINDOW);
     drop(controller.arm().unwrap_err());
     assert_eq!(controller.pair_until.lock().unwrap().unwrap(), deadline);
     *controller.pair_until.lock().unwrap() = Some(Instant::now());
@@ -462,8 +490,6 @@ fn enrollment_window_is_five_minutes_without_renewal_or_double_arm() {
 
 #[test]
 fn diagnostic_failure_is_static_bounded_and_survives_next_attempt() {
-    use crate::protocol::phone_status::PhoneFailureCategory;
-    use crate::protocol::phone_status::PhonePhase;
     let fixture = Fixture::new();
     let controller = fixture.controller();
     let attempt = diagnostic::Attempt::begin(Arc::clone(&controller));
@@ -500,7 +526,7 @@ fn diagnostic_failure_is_static_bounded_and_survives_next_attempt() {
     );
     assert!(status.last_failure.unwrap().attempt > first.attempt);
     assert!(facet_json::to_string(&status).unwrap().len() < 512);
-    let error = std::io::Error::other(rustls::Error::InvalidCertificate(
+    let error = IoError::other(rustls::Error::InvalidCertificate(
         rustls::CertificateError::InvalidPurpose,
     ));
     assert_eq!(
@@ -533,13 +559,13 @@ async fn request_bound_supply_binary_tls_frame_and_one_use_permission() -> eyre:
     let (cert, key) = phone();
     controller.enroll(&initial.generation, &cert)?;
     *controller.pair_until.lock().unwrap() = None;
-    let request = crate::protocol::AcquireRequest {
+    let request = AcquireRequest {
         account: "Synthetic".into(),
         secret_ref: "op://Synthetic/Dummy/token".into(),
         requesting_app: "synthetic-discord".into(),
         purpose: "dummy read-only messages".into(),
         destination: "https://discord.invalid/dummy".into(),
-        backend: crate::protocol::Backend::Memory,
+        backend: Backend::Memory,
     };
     assert!(controller.claim_permission(&request)?.is_none());
     controller.authorize_once(request.clone(), true)?;
@@ -549,7 +575,7 @@ async fn request_bound_supply_binary_tls_frame_and_one_use_permission() -> eyre:
     let shared = granted.begin(request, 1, Arc::new(AtomicBool::new(false)))?;
     let record = controller.record()?.unwrap();
     let (mut tls, task) = connect(Arc::clone(&controller), record, cert, key).await?;
-    let hello: message::Reply = crate::protocol::wire::read(&mut tls).await?;
+    let hello: message::Reply = wire::read(&mut tls).await?;
     let pending = hello.pending.unwrap();
     assert!(pending.credential.is_some());
     let message = message::Message {
@@ -561,9 +587,9 @@ async fn request_bound_supply_binary_tls_frame_and_one_use_permission() -> eyre:
         request_id: Some(pending.request_id.clone()),
         decision: None,
     };
-    crate::protocol::wire::write(&mut tls, &message).await?;
-    crate::protocol::wire::write_secret(&mut tls, b"synthetic-tls-value").await?;
-    let reply: message::Reply = crate::protocol::wire::read(&mut tls).await?;
+    wire::write(&mut tls, &message).await?;
+    wire::write_secret(&mut tls, b"synthetic-tls-value").await?;
+    let reply: message::Reply = wire::read(&mut tls).await?;
     assert_eq!(reply.accepted, Some(true));
     assert!(reply.pending.is_none());
     assert_eq!(&*shared.take_supply().unwrap(), b"synthetic-tls-value");
@@ -571,9 +597,9 @@ async fn request_bound_supply_binary_tls_frame_and_one_use_permission() -> eyre:
         sequence: 2,
         ..message
     };
-    crate::protocol::wire::write(&mut tls, &stale).await?;
-    crate::protocol::wire::write_secret(&mut tls, b"late-synthetic").await?;
-    let reply: message::Reply = crate::protocol::wire::read(&mut tls).await?;
+    wire::write(&mut tls, &stale).await?;
+    wire::write_secret(&mut tls, b"late-synthetic").await?;
+    let reply: message::Reply = wire::read(&mut tls).await?;
     assert_eq!(reply.accepted, Some(false));
     assert!(shared.take_supply().is_none());
     drop(tls);
@@ -583,8 +609,7 @@ async fn request_bound_supply_binary_tls_frame_and_one_use_permission() -> eyre:
 
 use crate::broker::engine::tests::shared_approval as granted_approval;
 use crate::broker::engine::tests::support as credential_support;
-fn credential_fixture() -> eyre::Result<(Fixture, Arc<Controller>, crate::protocol::AcquireRequest)>
-{
+fn credential_fixture() -> eyre::Result<(Fixture, Arc<Controller>, AcquireRequest)> {
     let fixture = Fixture::new();
     let controller = fixture.controller();
     controller.arm()?;
@@ -592,13 +617,13 @@ fn credential_fixture() -> eyre::Result<(Fixture, Arc<Controller>, crate::protoc
     let (cert, _key) = phone();
     controller.enroll(&initial.generation, &cert)?;
     *controller.pair_until.lock().unwrap() = None;
-    let request = crate::protocol::AcquireRequest {
+    let request = AcquireRequest {
         account: "Synthetic".into(),
         secret_ref: "op://Synthetic/Dummy/token".into(),
         requesting_app: "synthetic-discord".into(),
         purpose: "synthetic race".into(),
         destination: "https://discord.invalid/dummy".into(),
-        backend: crate::protocol::Backend::Memory,
+        backend: Backend::Memory,
     };
     Ok((fixture, controller, request))
 }
@@ -624,18 +649,18 @@ async fn reject_late_publication(revoke: bool) -> eyre::Result<()> {
     let shared = grant.begin(request.clone(), 1, Arc::clone(&cancel))?;
     assert!(shared.supply(zeroize::Zeroizing::new(b"synthetic-winner".to_vec())));
     let storage = Arc::new(credential_support::fake_storage::FakeStorage::default());
-    let engine = Arc::new(crate::broker::engine::Engine::new(
+    let engine = Arc::new(Engine::new(
         Arc::new(credential_support::fake_adapter::FakeAdapter::default()),
         Arc::new(granted_approval::SharedApproval(Arc::clone(&shared))),
         Arc::<credential_support::fake_storage::FakeStorage>::clone(&storage),
     ));
-    let gate = Arc::new(crate::broker::publication_gate::PublicationGate::default());
+    let gate = Arc::new(PublicationGate::default());
     *engine.publication_gate.lock().unwrap() = Some(Arc::clone(&gate));
     let running = Arc::clone(&engine);
     let second_request = request.clone();
     let first_cancel = Arc::clone(&cancel);
     let task = tokio::spawn(async move { running.acquire(request, 1, cancel).await });
-    tokio::time::timeout(std::time::Duration::from_secs(2), gate.ready.notified()).await?;
+    time::timeout(Duration::from_secs(2), gate.ready.notified()).await?;
     if revoke {
         controller.authorize_once(second_request.clone(), true)?;
         let replacement = controller.claim_permission(&second_request)?.unwrap();
@@ -644,7 +669,7 @@ async fn reject_late_publication(revoke: bool) -> eyre::Result<()> {
         assert!(!first_cancel.load(Ordering::SeqCst));
         assert_eq!(
             second.outcome(),
-            Some(crate::protocol::ApprovalPreviewDisposition::Cancelled)
+            Some(ApprovalPreviewDisposition::Cancelled)
         );
     } else {
         shared.expire_original_deadline();
@@ -666,30 +691,24 @@ async fn original_deadline_expiry_after_value_win_before_cache_insertion_cannot_
 }
 
 struct FixtureApproval;
-impl crate::broker::approval::Approval for FixtureApproval {
+impl Approval for FixtureApproval {
     fn approve<'a>(
         &'a self,
-        _request: &'a crate::protocol::AcquireRequest,
+        _request: &'a AcquireRequest,
         _pid: u32,
         _cancel: Arc<AtomicBool>,
-        _work: crate::broker::work_guard::WorkGuard,
-    ) -> std::pin::Pin<Box<dyn Future<Output = eyre::Result<bool>> + Send + 'a>> {
+        _work: WorkGuard,
+    ) -> Pin<Box<dyn Future<Output = eyre::Result<bool>> + Send + 'a>> {
         Box::pin(async { eyre::bail!("normal approval forbidden") })
     }
     fn fixture_decision<'a>(
         &'a self,
-        request: &'a crate::protocol::AcquireRequest,
+        request: &'a AcquireRequest,
         pid: u32,
         cancel: Arc<AtomicBool>,
-        _work: crate::broker::work_guard::WorkGuard,
-        grant: Arc<crate::broker::credential_grant::CredentialGrant>,
-    ) -> std::pin::Pin<
-        Box<
-            dyn Future<Output = eyre::Result<crate::broker::approval_decision::ApprovalDecision>>
-                + Send
-                + 'a,
-        >,
-    > {
+        _work: WorkGuard,
+        grant: Arc<CredentialGrant>,
+    ) -> Pin<Box<dyn Future<Output = eyre::Result<ApprovalDecision>> + Send + 'a>> {
         Box::pin(async move {
             let shared = grant.begin(request.clone(), pid, cancel)?;
             assert!(shared.synthetic_fixture());
@@ -697,9 +716,7 @@ impl crate::broker::approval::Approval for FixtureApproval {
                 b"real-looking-arbitrary-input".to_vec()
             )));
             assert!(shared.request_provider());
-            Ok(crate::broker::approval_decision::ApprovalDecision::Shared(
-                shared,
-            ))
+            Ok(ApprovalDecision::Shared(shared))
         })
     }
 }
@@ -707,20 +724,20 @@ impl crate::broker::approval::Approval for FixtureApproval {
 async fn typed_fixture_ipc_rejects_missing_expired_consumed_grants_and_ignores_live_cache()
 -> eyre::Result<()> {
     let (_fixture, controller, _) = credential_fixture()?;
-    let request = crate::broker::synthetic_credential_fixture::request();
+    let request = synthetic_credential_fixture::request();
     let adapter = Arc::new(credential_support::fake_adapter::FakeAdapter::default());
     let storage = Arc::new(credential_support::fake_storage::FakeStorage::default());
-    let engine = Arc::new(crate::broker::engine::Engine::new(
+    let engine = Arc::new(Engine::new(
         Arc::<credential_support::fake_adapter::FakeAdapter>::clone(&adapter),
         Arc::new(FixtureApproval),
         Arc::<credential_support::fake_storage::FakeStorage>::clone(&storage),
     ));
     *engine.fixture_controller.lock().unwrap() = Some(Arc::clone(&controller));
-    let cached = crate::broker::lease::Lease::new(
+    let cached = Lease::new(
         request.clone(),
         zeroize::Zeroizing::new(b"ordinary-live-cache-match".to_vec()),
-        crate::protocol::wire::unix_ms()?,
-        std::time::Instant::now(),
+        wire::unix_ms()?,
+        Instant::now(),
     )?;
     let cache_id = cached.id.clone();
     engine.leases.lock().await.insert(cache_id.clone(), cached);
@@ -728,16 +745,15 @@ async fn typed_fixture_ipc_rejects_missing_expired_consumed_grants_and_ignores_l
         r"\\.\pipe\teamy-broker-test-fixture-{}",
         uuid::Uuid::new_v4()
     );
-    let client = crate::sdk::Client::new(None)?.with_endpoint(endpoint.clone());
+    let client = Client::new(None)?.with_endpoint(endpoint.clone());
     let serving = Arc::clone(&engine);
     let stop = teamy_cancellation::CancellationToken::new();
     let stopped = stop.clone();
-    let task = tokio::spawn(async move {
-        crate::broker::server::serve_at(serving, stopped, &endpoint, false).await
-    });
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+    let task =
+        tokio::spawn(async move { server::serve_at(serving, stopped, &endpoint, false).await });
+    time::timeout(Duration::from_secs(2), async {
         while !client.status().await?.running {
-            tokio::task::yield_now().await;
+            task::yield_now().await;
         }
         Ok::<_, eyre::Report>(())
     })
@@ -759,7 +775,7 @@ async fn typed_fixture_ipc_rejects_missing_expired_consumed_grants_and_ignores_l
     assert!(storage.published.lock().unwrap().is_empty());
     controller.authorize_fixture(request.clone())?;
     let value = client.acquire_fixture(request.clone()).await?;
-    assert!(value.expose(|bytes| bytes == crate::broker::synthetic_credential_fixture::PROVIDER)?);
+    assert!(value.expose(|bytes| bytes == PROVIDER)?);
     assert_ne!(value.lease_id, cache_id);
     assert_eq!(adapter.calls.load(Ordering::SeqCst), 0);
     assert_eq!(storage.published.lock().unwrap().len(), 1);
@@ -784,7 +800,7 @@ fn synthetic_vault_name_and_changed_fixture_metadata_cannot_select_fixture() -> 
             .synthetic_fixture
     );
     for field in 0..6 {
-        let mut changed = crate::broker::synthetic_credential_fixture::request();
+        let mut changed = synthetic_credential_fixture::request();
         match field {
             0 => changed.account.push('x'),
             1 => changed.secret_ref.push('x'),
@@ -792,9 +808,8 @@ fn synthetic_vault_name_and_changed_fixture_metadata_cannot_select_fixture() -> 
             3 => changed.purpose.push('x'),
             4 => changed.destination.push('x'),
             _ => {
-                changed.backend = crate::protocol::Backend::WindowsCredentialManager(
-                    "teamy-broker/fixture-spoof".into(),
-                );
+                changed.backend =
+                    Backend::WindowsCredentialManager("teamy-broker/fixture-spoof".into());
             }
         }
         assert!(controller.authorize_fixture(changed).is_err());
@@ -803,26 +818,24 @@ fn synthetic_vault_name_and_changed_fixture_metadata_cannot_select_fixture() -> 
 }
 #[tokio::test]
 async fn message_read_distinguishes_timeout_closed_and_rejected_frames() -> eyre::Result<()> {
-    use crate::protocol::phone_status::PhoneFailureCategory as F;
-    use crate::protocol::phone_status::PhonePhase;
     let (_fixture, controller, _) = credential_fixture()?;
-    for expected in [F::Deadline, F::ReadClosed, F::MessageRejected] {
-        let (mut reader, mut writer) = tokio::io::duplex(64);
+    for expected in [
+        PhoneFailureCategory::Deadline,
+        PhoneFailureCategory::ReadClosed,
+        PhoneFailureCategory::MessageRejected,
+    ] {
+        let (mut reader, mut writer) = io::duplex(64);
         controller.phase(PhonePhase::MessageRead);
-        if expected == F::ReadClosed {
+        if expected == PhoneFailureCategory::ReadClosed {
             drop(writer);
-        } else if expected == F::MessageRejected {
+        } else if expected == PhoneFailureCategory::MessageRejected {
             writer.write_u32(16385).await?;
             drop(writer);
         }
         drop(
-            super::message_read::read(
-                &mut reader,
-                &controller,
-                std::time::Duration::from_millis(20),
-            )
-            .await
-            .unwrap_err(),
+            super::message_read::read(&mut reader, &controller, Duration::from_millis(20))
+                .await
+                .unwrap_err(),
         );
         assert_eq!(
             controller
@@ -839,17 +852,15 @@ async fn message_read_distinguishes_timeout_closed_and_rejected_frames() -> eyre
 
 #[tokio::test(start_paused = true)]
 async fn idle_scheduling_slack_does_not_allow_slow_partial_frames() -> eyre::Result<()> {
-    use crate::protocol::phone_status::PhoneFailureCategory as F;
-    use crate::protocol::phone_status::PhonePhase;
     let (_fixture, controller, _) = credential_fixture()?;
-    let (mut reader, mut writer) = tokio::io::duplex(1024);
+    let (mut reader, mut writer) = io::duplex(1024);
     let owned = Arc::clone(&controller);
     let read = tokio::spawn(async move {
         owned.phase(PhonePhase::MessageRead);
         super::message_read::read(&mut reader, &owned, super::timing::IDLE).await
     });
-    tokio::time::sleep(std::time::Duration::from_secs(7)).await;
-    crate::protocol::wire::write(
+    time::sleep(Duration::from_secs(7)).await;
+    wire::write(
         &mut writer,
         &message::Message {
             version: 1,
@@ -863,15 +874,15 @@ async fn idle_scheduling_slack_does_not_allow_slow_partial_frames() -> eyre::Res
     )
     .await?;
     assert_eq!(read.await??.sequence, 1);
-    let (mut reader, mut writer) = tokio::io::duplex(64);
+    let (mut reader, mut writer) = io::duplex(64);
     let owned = Arc::clone(&controller);
     let read = tokio::spawn(async move {
         super::message_read::read(&mut reader, &owned, super::timing::IDLE).await
     });
     writer.write_u8(0).await?;
-    tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+    time::sleep(Duration::from_secs(4)).await;
     writer.write_u8(0).await?;
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    time::sleep(Duration::from_secs(2)).await;
     drop(read.await?.unwrap_err());
     assert_eq!(
         controller
@@ -880,7 +891,7 @@ async fn idle_scheduling_slack_does_not_allow_slow_partial_frames() -> eyre::Res
             .last_failure
             .unwrap()
             .category,
-        F::Deadline
+        PhoneFailureCategory::Deadline
     );
     Ok(())
 }
@@ -889,20 +900,14 @@ async fn slow_tls(
     record: Record,
     cert: Vec<u8>,
     key: Vec<u8>,
-) -> eyre::Result<(
-    tokio_rustls::client::TlsStream<tokio::io::DuplexStream>,
-    tokio::task::JoinHandle<eyre::Result<()>>,
-)> {
+) -> eyre::Result<(TlsStream<DuplexStream>, JoinHandle<eyre::Result<()>>)> {
     let config = client_config(&record, cert, key);
-    let (client, server) = tokio::io::duplex(32768);
+    let (client, server) = io::duplex(32768);
     let task = tokio::spawn(transport::test_slow_connection(server, controller, record));
     let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
-    let tls = tokio::time::timeout(
+    let tls = time::timeout(
         super::timing::CLIENT_CONNECT,
-        connector.connect(
-            ServerName::IpAddress(teamy_broker_handoff::phone_config::DESKTOP.into()),
-            client,
-        ),
+        connector.connect(ServerName::IpAddress(Ipv4Addr::LOCALHOST.into()), client),
     )
     .await??;
     Ok((tls, task))
@@ -918,7 +923,7 @@ async fn slow_authorized_tls_supply_and_graceful_reconnect_keep_deadlines_and_se
     let initial = controller.record()?.unwrap();
     controller.enroll(&initial.generation, &cert)?;
     *controller.pair_until.lock().unwrap() = None;
-    let request = crate::broker::synthetic_credential_fixture::request();
+    let request = synthetic_credential_fixture::request();
     controller.authorize_fixture(request.clone())?;
     let cancel = Arc::new(AtomicBool::new(false));
     let shared =
@@ -932,13 +937,10 @@ async fn slow_authorized_tls_supply_and_graceful_reconnect_keep_deadlines_and_se
         key.clone(),
     )
     .await?;
-    let hello: message::Reply = tokio::time::timeout(
-        super::timing::CLIENT_CONNECT,
-        crate::protocol::wire::read(&mut tls),
-    )
-    .await??;
+    let hello: message::Reply =
+        time::timeout(super::timing::CLIENT_CONNECT, wire::read(&mut tls)).await??;
     let id = hello.pending.unwrap().request_id;
-    tokio::time::sleep(std::time::Duration::from_secs(7)).await;
+    time::sleep(Duration::from_secs(7)).await;
     let supply = message::Message {
         version: 1,
         scope: SCOPE.into(),
@@ -948,22 +950,15 @@ async fn slow_authorized_tls_supply_and_graceful_reconnect_keep_deadlines_and_se
         request_id: Some(id.clone()),
         decision: None,
     };
-    let reply: message::Reply = tokio::time::timeout(super::timing::CLIENT_EXCHANGE, async {
-        crate::protocol::wire::write(&mut tls, &supply).await?;
-        crate::protocol::wire::write_secret(
-            &mut tls,
-            crate::broker::synthetic_credential_fixture::INPUT,
-        )
-        .await?;
-        crate::protocol::wire::read(&mut tls).await
+    let reply: message::Reply = time::timeout(super::timing::CLIENT_EXCHANGE, async {
+        wire::write(&mut tls, &supply).await?;
+        wire::write_secret(&mut tls, INPUT).await?;
+        wire::read(&mut tls).await
     })
     .await??;
     assert_eq!(reply.accepted, Some(true));
     assert!(reply.pending.is_none());
-    assert_eq!(
-        shared.take_supply().unwrap().as_slice(),
-        crate::broker::synthetic_credential_fixture::INPUT
-    );
+    assert_eq!(shared.take_supply().unwrap().as_slice(), INPUT);
     tls.shutdown().await?;
     drop(tls);
     drop(task.await?.unwrap_err());
@@ -974,7 +969,7 @@ async fn slow_authorized_tls_supply_and_graceful_reconnect_keep_deadlines_and_se
             .last_failure
             .unwrap()
             .category,
-        crate::protocol::phone_status::PhoneFailureCategory::ReadClosed
+        PhoneFailureCategory::ReadClosed
     );
     let (mut tls, task) = slow_tls(
         Arc::clone(&controller),
@@ -983,15 +978,12 @@ async fn slow_authorized_tls_supply_and_graceful_reconnect_keep_deadlines_and_se
         key,
     )
     .await?;
-    let fresh: message::Reply = tokio::time::timeout(
-        super::timing::CLIENT_CONNECT,
-        crate::protocol::wire::read(&mut tls),
-    )
-    .await??;
+    let fresh: message::Reply =
+        time::timeout(super::timing::CLIENT_CONNECT, wire::read(&mut tls)).await??;
     assert_ne!(fresh.session_id, hello.session_id);
     assert!(fresh.pending.is_none());
-    crate::protocol::wire::write(&mut tls, &supply).await?;
-    let rejected: eyre::Result<message::Reply> = crate::protocol::wire::read(&mut tls).await;
+    wire::write(&mut tls, &supply).await?;
+    let rejected: eyre::Result<message::Reply> = wire::read(&mut tls).await;
     drop(rejected.unwrap_err());
     drop(task.await?.unwrap_err());
     assert!(!cancel.load(Ordering::SeqCst));
@@ -1009,7 +1001,7 @@ async fn slow_exchange_never_renews_request_deadline_or_accepts_cancelled_supply
         let initial = controller.record()?.unwrap();
         controller.enroll(&initial.generation, &cert)?;
         *controller.pair_until.lock().unwrap() = None;
-        let request = crate::broker::synthetic_credential_fixture::request();
+        let request = synthetic_credential_fixture::request();
         controller.authorize_fixture(request.clone())?;
         let cancel = Arc::new(AtomicBool::new(false));
         let shared = controller.claim_fixture_permission(&request)?.begin(
@@ -1024,7 +1016,7 @@ async fn slow_exchange_never_renews_request_deadline_or_accepts_cancelled_supply
             key,
         )
         .await?;
-        let hello: message::Reply = crate::protocol::wire::read(&mut tls).await?;
+        let hello: message::Reply = wire::read(&mut tls).await?;
         let supply = message::Message {
             version: 1,
             scope: SCOPE.into(),
@@ -1036,19 +1028,15 @@ async fn slow_exchange_never_renews_request_deadline_or_accepts_cancelled_supply
         };
         let (exchange, ()) = tokio::join!(
             async {
-                tokio::time::timeout(super::timing::CLIENT_EXCHANGE, async {
-                    crate::protocol::wire::write(&mut tls, &supply).await?;
-                    crate::protocol::wire::write_secret(
-                        &mut tls,
-                        crate::broker::synthetic_credential_fixture::INPUT,
-                    )
-                    .await?;
-                    crate::protocol::wire::read::<message::Reply, _>(&mut tls).await
+                time::timeout(super::timing::CLIENT_EXCHANGE, async {
+                    wire::write(&mut tls, &supply).await?;
+                    wire::write_secret(&mut tls, INPUT).await?;
+                    wire::read::<message::Reply, _>(&mut tls).await
                 })
                 .await
             },
             async {
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                time::sleep(Duration::from_secs(1)).await;
                 if expire {
                     shared.expire_original_deadline();
                 } else {
@@ -1063,9 +1051,9 @@ async fn slow_exchange_never_renews_request_deadline_or_accepts_cancelled_supply
         assert_eq!(
             shared.outcome(),
             Some(if expire {
-                crate::protocol::ApprovalPreviewDisposition::TimedOut
+                ApprovalPreviewDisposition::TimedOut
             } else {
-                crate::protocol::ApprovalPreviewDisposition::Cancelled
+                ApprovalPreviewDisposition::Cancelled
             })
         );
         tls.shutdown().await?;
@@ -1113,28 +1101,28 @@ fn acquisition_boundary_pins_generation_window_attempt() {
     c.revoke().unwrap();
 }
 
-fn isolated_pair_pipe() -> (String, tokio::net::windows::named_pipe::NamedPipeServer) {
+fn isolated_pair_pipe() -> (String, NamedPipeServer) {
     let endpoint = format!(r"\\.\pipe\teamy-pairing-test-{}", uuid::Uuid::new_v4());
-    let pipe = crate::platform::pipe_security::create(&endpoint, true).unwrap();
+    let pipe = pipe_security::create(&endpoint, true).unwrap();
     (endpoint, pipe)
 }
-async fn pair_pipe_hello(pipe: &mut tokio::net::windows::named_pipe::NamedPipeServer) {
+async fn pair_pipe_hello(pipe: &mut NamedPipeServer) {
     pipe.connect().await.unwrap();
-    crate::protocol::wire::write(
+    wire::write(
         pipe,
-        &crate::protocol::Hello {
-            version: crate::protocol::VERSION,
+        &Hello {
+            version: VERSION,
             instance_id: uuid::Uuid::new_v4().to_string(),
-            capabilities: crate::protocol::CAPABILITIES
+            capabilities: CAPABILITIES
                 .iter()
                 .map(|s| (*s).into())
-                .chain(std::iter::once("persistent-no-vault-phone-v1".into()))
+                .chain(iter::once("persistent-no-vault-phone-v1".into()))
                 .collect(),
         },
     )
     .await
     .unwrap();
-    let _: crate::protocol::Hello = crate::protocol::wire::read(pipe).await.unwrap();
+    let _: Hello = wire::read(pipe).await.unwrap();
 }
 #[tokio::test]
 async fn secured_pipe_dispatch_inspect_confirm_and_replay() {
@@ -1150,29 +1138,25 @@ async fn secured_pipe_dispatch_inspect_confirm_and_replay() {
         let server = Arc::clone(&c);
         let task = tokio::spawn(async move {
             pair_pipe_hello(&mut pipe).await;
-            let request: crate::protocol::Request =
-                crate::protocol::wire::read(&mut pipe).await.unwrap();
+            let request: Request = wire::read(&mut pipe).await.unwrap();
             request.validate().unwrap();
-            let peer = crate::protocol::Hello {
-                version: crate::protocol::VERSION,
+            let peer = Hello {
+                version: VERSION,
                 instance_id: "test".into(),
                 capabilities: vec!["persistent-no-vault-phone-v1".into()],
             };
             super::super::phone_control_session::execute_with(&mut pipe, &peer, &request, &server)
                 .await
         });
-        let client = crate::sdk::Client::new(None)
+        let client = Client::new(None)
             .unwrap()
             .with_endpoint(endpoint)
-            .with_deadlines(
-                std::time::Duration::from_secs(1),
-                std::time::Duration::from_secs(1),
-            );
+            .with_deadlines(Duration::from_secs(1), Duration::from_secs(1));
         if step == 0 {
             let result = client.pairing_inspect(&attempt.id).await.unwrap();
             assert_eq!(result.comparison, "ABCD 1234 DCBA 5678");
         } else {
-            let code = crate::protocol::pairing_comparison::PairingCode {
+            let code = PairingCode {
                 comparison: "ABCD 1234 DCBA 5678".into(),
             };
             if step == 1 {
@@ -1207,27 +1191,22 @@ async fn pairing_sdk_total_deadline_bounds_stalled_partial_frames() {
             let (endpoint, mut pipe) = isolated_pair_pipe();
             let task = tokio::spawn(async move {
                 pair_pipe_hello(&mut pipe).await;
-                let _: crate::protocol::Request =
-                    crate::protocol::wire::read(&mut pipe).await.unwrap();
+                let _: Request = wire::read(&mut pipe).await.unwrap();
                 if operation == "confirm" {
-                    let _: crate::protocol::pairing_comparison::PairingCode =
-                        crate::protocol::wire::read(&mut pipe).await.unwrap();
+                    let _: PairingCode = wire::read(&mut pipe).await.unwrap();
                 }
                 if partial {
                     pipe.write_all(&[0, 0]).await.unwrap();
                 }
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                time::sleep(Duration::from_secs(1)).await;
             });
-            let client = crate::sdk::Client::new(None)
+            let client = Client::new(None)
                 .unwrap()
                 .with_endpoint(endpoint)
-                .with_deadlines(
-                    std::time::Duration::from_secs(1),
-                    std::time::Duration::from_millis(80),
-                );
+                .with_deadlines(Duration::from_secs(1), Duration::from_millis(80));
             let id = uuid::Uuid::new_v4().to_string();
             let start = Instant::now();
-            let code = crate::protocol::pairing_comparison::PairingCode {
+            let code = PairingCode {
                 comparison: "ABCD 1234 DCBA 5678".into(),
             };
             match operation {
@@ -1244,7 +1223,7 @@ async fn pairing_sdk_total_deadline_bounds_stalled_partial_frames() {
                     let _ = client.pairing_cancel(&id).await.expect_err("deadline");
                 }
             }
-            assert!(start.elapsed() < std::time::Duration::from_secs(1));
+            assert!(start.elapsed() < Duration::from_secs(1));
             task.abort();
         }
     }
@@ -1252,23 +1231,21 @@ async fn pairing_sdk_total_deadline_bounds_stalled_partial_frames() {
 #[tokio::test]
 async fn pairing_sdk_cancellation_drops_partial_exchange_pipe() {
     let (endpoint, mut pipe) = isolated_pair_pipe();
-    let (seen, wait) = tokio::sync::oneshot::channel();
+    let (seen, wait) = oneshot::channel();
     let server = tokio::spawn(async move {
         pair_pipe_hello(&mut pipe).await;
-        let _: crate::protocol::Request = crate::protocol::wire::read(&mut pipe).await.unwrap();
+        let _: Request = wire::read(&mut pipe).await.unwrap();
         let _ = seen.send(());
         let mut byte = [0];
         assert_eq!(
-            tokio::time::timeout(std::time::Duration::from_secs(1), pipe.read(&mut byte))
+            time::timeout(Duration::from_secs(1), pipe.read(&mut byte))
                 .await
                 .unwrap()
                 .unwrap(),
             0
         );
     });
-    let client = crate::sdk::Client::new(None)
-        .unwrap()
-        .with_endpoint(endpoint);
+    let client = Client::new(None).unwrap().with_endpoint(endpoint);
     let caller = tokio::spawn(async move {
         client
             .pairing_inspect(&uuid::Uuid::new_v4().to_string())
@@ -1287,16 +1264,13 @@ fn safe_pairing_diagnostics_have_stage_and_category_without_code() {
     c.arm().unwrap();
     let (_, _, a) = c.capture_pairing().unwrap();
     a.track(Arc::downgrade(&c));
-    a.stage(crate::protocol::phone_status::PhonePhase::PairingComparison);
-    a.failure(crate::protocol::phone_status::PhoneFailureCategory::ReadClosed);
+    a.stage(PhonePhase::PairingComparison);
+    a.failure(PhoneFailureCategory::ReadClosed);
     let s = c.status().unwrap();
-    assert_eq!(
-        s.diagnostic.phase,
-        crate::protocol::phone_status::PhonePhase::PairingComparison
-    );
+    assert_eq!(s.diagnostic.phase, PhonePhase::PairingComparison);
     assert_eq!(
         s.diagnostic.last_failure.unwrap().category,
-        crate::protocol::phone_status::PhoneFailureCategory::ReadClosed
+        PhoneFailureCategory::ReadClosed
     );
     assert!(!format!("{s:?}").contains("ABCD"));
     c.revoke().unwrap();
@@ -1306,21 +1280,18 @@ fn safe_pairing_diagnostics_have_stage_and_category_without_code() {
 fn pairing_transport_diagnostic_keeps_only_numeric_kind_and_elapsed() {
     let f = Fixture::new();
     let c = f.controller();
-    c.phase(crate::protocol::phone_status::PhonePhase::PairingComparison);
-    c.transport_failure(&std::io::Error::from_raw_os_error(10054));
+    c.phase(PhonePhase::PairingComparison);
+    c.transport_failure(&IoError::from_raw_os_error(10054));
     let d = c.status().unwrap().diagnostic;
     let failure = d.last_failure.unwrap();
     assert_eq!(failure.transport_os_code, Some(10054));
     assert_eq!(
         failure.transport_kind,
-        Some(crate::protocol::phone_status::PhoneTransportKind::ConnectionReset)
+        Some(PhoneTransportKind::ConnectionReset)
     );
     assert!(failure.elapsed_phase_ms.is_some());
     assert!(d.phase_started_unix_ms.is_some());
     let secret = "secret-session-code";
-    c.transport_failure(&std::io::Error::new(
-        std::io::ErrorKind::ConnectionAborted,
-        secret,
-    ));
+    c.transport_failure(&IoError::new(ErrorKind::ConnectionAborted, secret));
     assert!(!format!("{:?}", c.status().unwrap()).contains(secret));
 }

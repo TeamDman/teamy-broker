@@ -1,21 +1,25 @@
+use crate::broker::work_guard::WorkGuard;
+use crate::broker::work_kind::WorkKind;
 use crate::protocol::FailureKind;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+use std::time::Instant;
 #[derive(Debug)]
 pub(crate) struct ApprovalDialogState {
-    pub work: Option<crate::broker::work_guard::WorkGuard>,
-    pub dialog: std::sync::Mutex<Option<crate::broker::work_guard::WorkGuard>>,
+    pub work: Option<WorkGuard>,
+    pub dialog: Mutex<Option<WorkGuard>>,
     pub cancel: Arc<AtomicBool>,
     pub timed_out: AtomicBool,
-    pub deadline: std::time::Instant,
+    pub deadline: Instant,
 }
 impl ApprovalDialogState {
     pub fn created(&self) {
         if let Some(work) = &self.work {
             let mut dialog = self.dialog.lock().expect("dialog state lock");
             if dialog.is_none() {
-                *dialog = Some(work.phase(crate::broker::work_kind::WorkKind::Dialog));
+                *dialog = Some(work.phase(WorkKind::Dialog));
             }
         }
     }
@@ -27,7 +31,7 @@ impl ApprovalDialogState {
         if self.cancel.load(Ordering::SeqCst) {
             return true;
         }
-        if milliseconds >= 60_000 || std::time::Instant::now() >= self.deadline {
+        if milliseconds >= 60_000 || Instant::now() >= self.deadline {
             self.timed_out.store(true, Ordering::SeqCst);
             return true;
         }
@@ -47,7 +51,7 @@ impl ApprovalDialogState {
             FailureKind::RequestCancelled
         );
         eyre::ensure!(
-            !self.timed_out.load(Ordering::SeqCst) && std::time::Instant::now() < self.deadline,
+            !self.timed_out.load(Ordering::SeqCst) && Instant::now() < self.deadline,
             FailureKind::ApprovalTimedOut
         );
         Ok(approved)
@@ -56,10 +60,13 @@ impl ApprovalDialogState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn timer_state(deadline: std::time::Instant) -> ApprovalDialogState {
+    use crate::broker::work_state::WorkState;
+    use std::cell::Cell;
+    use std::time::Duration;
+    fn timer_state(deadline: Instant) -> ApprovalDialogState {
         ApprovalDialogState {
             work: None,
-            dialog: std::sync::Mutex::new(None),
+            dialog: Mutex::new(None),
             cancel: Arc::new(AtomicBool::new(false)),
             timed_out: AtomicBool::new(false),
             deadline,
@@ -67,7 +74,7 @@ mod tests {
     }
     #[test]
     fn cancellation_precedes_timer_attention() {
-        let state = timer_state(std::time::Instant::now() + std::time::Duration::from_mins(1));
+        let state = timer_state(Instant::now() + Duration::from_mins(1));
         state.cancel.store(true, Ordering::SeqCst);
         assert!(state.on_timer(1, || panic!("cancelled dialog must not request attention")));
         assert!(!state.timed_out.load(Ordering::SeqCst));
@@ -75,8 +82,8 @@ mod tests {
     #[test]
     fn elapsed_hard_deadline_precedes_timer_attention() {
         let state = timer_state(
-            std::time::Instant::now()
-                .checked_sub(std::time::Duration::from_millis(1))
+            Instant::now()
+                .checked_sub(Duration::from_millis(1))
                 .unwrap(),
         );
         assert!(state.on_timer(1, || panic!("expired dialog must not request attention")));
@@ -84,7 +91,7 @@ mod tests {
     }
     #[test]
     fn native_timer_limit_precedes_attention_even_if_deadline_has_not_elapsed() {
-        let state = timer_state(std::time::Instant::now() + std::time::Duration::from_mins(1));
+        let state = timer_state(Instant::now() + Duration::from_mins(1));
         assert!(state.on_timer(60_000, || panic!(
             "expired native timer must not request attention"
         )));
@@ -92,8 +99,8 @@ mod tests {
     }
     #[test]
     fn eligible_timer_runs_attention_without_closing() {
-        let state = timer_state(std::time::Instant::now() + std::time::Duration::from_mins(1));
-        let called = std::cell::Cell::new(false);
+        let state = timer_state(Instant::now() + Duration::from_mins(1));
+        let called = Cell::new(false);
         assert!(!state.on_timer(1, || called.set(true)));
         assert!(called.get());
     }
@@ -101,10 +108,10 @@ mod tests {
     fn timer_and_user_denial_are_distinct_and_cancellation_never_approves() {
         let state = ApprovalDialogState {
             work: None,
-            dialog: std::sync::Mutex::new(None),
+            dialog: Mutex::new(None),
             cancel: Arc::new(AtomicBool::new(false)),
             timed_out: AtomicBool::new(false),
-            deadline: std::time::Instant::now() + std::time::Duration::from_mins(1),
+            deadline: Instant::now() + Duration::from_mins(1),
         };
         assert!(!state.should_close(59_999));
         assert!(!state.result(false).unwrap());
@@ -129,11 +136,11 @@ mod tests {
     fn delayed_native_timer_cannot_approve_after_the_hard_deadline() {
         let state = ApprovalDialogState {
             work: None,
-            dialog: std::sync::Mutex::new(None),
+            dialog: Mutex::new(None),
             cancel: Arc::new(AtomicBool::new(false)),
             timed_out: AtomicBool::new(false),
-            deadline: std::time::Instant::now()
-                .checked_sub(std::time::Duration::from_millis(1))
+            deadline: Instant::now()
+                .checked_sub(Duration::from_millis(1))
                 .unwrap(),
         };
         assert_eq!(
@@ -147,14 +154,14 @@ mod tests {
     #[test]
     fn actual_dialog_lifecycle_and_late_blocking_teardown_remain_visible() {
         use crate::broker::work_kind::WorkKind;
-        let activity = Arc::new(crate::broker::work_state::WorkState::default());
+        let activity = Arc::new(WorkState::default());
         let request = activity.request().unwrap();
         let state = ApprovalDialogState {
             work: Some(request.phase(WorkKind::Approval)),
-            dialog: std::sync::Mutex::new(None),
+            dialog: Mutex::new(None),
             cancel: Arc::new(AtomicBool::new(false)),
             timed_out: AtomicBool::new(false),
-            deadline: std::time::Instant::now() + std::time::Duration::from_mins(1),
+            deadline: Instant::now() + Duration::from_mins(1),
         };
         assert_eq!(activity.snapshot().counts[WorkKind::Dialog as usize], 0);
         state.created();

@@ -4,18 +4,34 @@ use super::paired_socket::PairedSocket;
 use super::paired_socket::read_frame;
 use super::paired_socket::write_frame;
 use crate::broker::engine::Engine;
+use crate::broker::server;
+use crate::broker::shared_preview::SharedPreviewHub;
+use crate::protocol::ApprovalPreviewDisposition;
+use crate::protocol::SharedPreviewSnapshot;
+use crate::protocol::wire as protocol_wire;
 use crate::sdk::Client;
 use std::path::Path;
+use std::process;
+use std::str;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
+use teamy_broker_handoff::binding::Binding;
 use teamy_broker_handoff::envelope::Envelope;
 use teamy_broker_handoff::pairing_binding::PairingBinding;
 use teamy_broker_handoff::pending::Pending;
 use teamy_broker_handoff::queue::Queue;
 use teamy_broker_handoff::session::Session;
+use teamy_broker_handoff::wire;
+use tokio::net::TcpListener;
+use tokio::net::TcpStream;
+use tokio::task;
+use tokio::task::JoinHandle;
+use tokio::time;
+use tokio::time::Instant;
 use zeroize::Zeroizing;
 async fn exchange(
-    socket: &mut tokio::net::TcpStream,
+    socket: &mut TcpStream,
     phone: &mut JavaPairingWorker,
     operation: &str,
     envelope: Envelope,
@@ -28,35 +44,33 @@ async fn exchange(
     write_frame(socket, &encrypted).await?;
     let encrypted = read_frame(socket).await?;
     let plaintext = phone.call(7, &encrypted).await?;
-    Ok(facet_json::from_str(std::str::from_utf8(&plaintext)?)?)
+    Ok(facet_json::from_str(str::from_utf8(&plaintext)?)?)
 }
 async fn pending_binding(
-    socket: &mut tokio::net::TcpStream,
+    socket: &mut TcpStream,
     phone: &mut JavaPairingWorker,
     session: &Session,
 ) -> eyre::Result<String> {
-    let result = tokio::time::timeout(Duration::from_secs(3), async {
+    let result = time::timeout(Duration::from_secs(3), async {
         loop {
-            let challenge = teamy_broker_handoff::wire::random::<32>()?;
+            let challenge = wire::random::<32>()?;
             let poll = session.seal(teamy_broker_handoff::POLL_AAD, &challenge)?;
             let reply = exchange(socket, phone, "poll", poll).await?;
             let plain = session.open(&challenge, &reply)?;
-            let pending: Vec<Pending> = facet_json::from_str(std::str::from_utf8(&plain)?)?;
+            let pending: Vec<Pending> = facet_json::from_str(str::from_utf8(&plain)?)?;
             if let Some(pending) = pending.first() {
                 break Ok::<_, eyre::Report>(pending.binding.clone());
             }
-            tokio::time::sleep(Duration::from_millis(5)).await;
+            time::sleep(Duration::from_millis(5)).await;
         }
     })
     .await??;
     Ok(result)
 }
-async fn confirmed_workers(
-    until: tokio::time::Instant,
-) -> eyre::Result<(JavaPairingWorker, JavaPairingWorker)> {
-    let java = crate::broker::mobile_dummy::java_pairing_worker::configured_java()?;
+async fn confirmed_workers(until: Instant) -> eyre::Result<(JavaPairingWorker, JavaPairingWorker)> {
+    let java = super::JavaExecutablePath::for_tests()?.into_path_buf();
     let artifacts = Path::new(env!("CARGO_MANIFEST_DIR")).join("pairing/java");
-    let binding = PairingBinding::dummy(crate::protocol::wire::unix_ms()?)?;
+    let binding = PairingBinding::dummy(protocol_wire::unix_ms()?)?;
     let mut desktop = JavaPairingWorker::start(&java, &artifacts, &binding, until).await?;
     let mut phone = JavaPairingWorker::start_test_phone(&java, &artifacts, &binding, until).await?;
     let initial = phone.call(2, &[]).await?;
@@ -78,18 +92,18 @@ async fn confirmed_workers(
 }
 #[tokio::test]
 async fn paired_loopback_socket_completes_isolated_sdk_consumer_and_purge() -> eyre::Result<()> {
-    let until = tokio::time::Instant::now() + Duration::from_secs(20);
+    let until = Instant::now() + Duration::from_secs(20);
     let (mut desktop, mut phone) = confirmed_workers(until).await?;
     let session = Session::random()?;
     let key = session.transport_key();
     let encrypted = desktop.call(6, key.as_ref()).await?;
     let received = phone.call(7, &encrypted).await?;
-    let client_session = Session::from_bootstrap(&teamy_broker_handoff::wire::hex(&received))?;
+    let client_session = Session::from_bootstrap(&wire::hex(&received))?;
     drop(received);
     drop(key);
     let queue = Arc::new(Queue::new(session));
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let mut socket = tokio::net::TcpStream::connect(listener.local_addr()?).await?;
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let mut socket = TcpStream::connect(listener.local_addr()?).await?;
     let (server, _) = listener.accept().await?;
     drop(listener);
     let actor = PairedSocket {
@@ -110,7 +124,7 @@ async fn paired_loopback_socket_completes_isolated_sdk_consumer_and_purge() -> e
     );
     let server_endpoint = endpoint.clone();
     let ipc = tokio::spawn(async move {
-        crate::broker::server::serve_at(
+        server::serve_at(
             engine,
             teamy_cancellation::CancellationToken::new(),
             &server_endpoint,
@@ -121,9 +135,9 @@ async fn paired_loopback_socket_completes_isolated_sdk_consumer_and_purge() -> e
     let client = Client::new(None)?
         .with_endpoint(endpoint)
         .with_deadlines(Duration::from_secs(2), Duration::from_secs(5));
-    tokio::time::timeout(Duration::from_secs(3), async {
+    time::timeout(Duration::from_secs(3), async {
         while !client.status().await?.running {
-            tokio::task::yield_now().await;
+            task::yield_now().await;
         }
         Ok::<_, eyre::Report>(())
     })
@@ -131,9 +145,9 @@ async fn paired_loopback_socket_completes_isolated_sdk_consumer_and_purge() -> e
     let consumer = client.clone();
     let waiting = tokio::spawn(async move { consumer.acquire(super::request()).await });
     let exact = pending_binding(&mut socket, &mut phone, &client_session).await?;
-    let record: teamy_broker_handoff::binding::Binding = facet_json::from_str(&exact)?;
+    let record: Binding = facet_json::from_str(&exact)?;
     eyre::ensure!(
-        record.consumer_pid == std::process::id() && record.lease_ms == 900_000,
+        record.consumer_pid == process::id() && record.lease_ms == 900_000,
         "test binding mismatch"
     );
     let mut plain = Zeroizing::new(vec![1]);
@@ -175,17 +189,13 @@ async fn paired_loopback_socket_completes_isolated_sdk_consumer_and_purge() -> e
 
 #[tokio::test]
 async fn authenticated_preview_bridge_reconciles_and_rejects_stale_decisions() -> eyre::Result<()> {
-    use crate::broker::shared_preview::SharedPreviewHub;
-    use crate::protocol::ApprovalPreviewDisposition;
-    use crate::protocol::SharedPreviewSnapshot;
-    use std::sync::atomic::AtomicBool;
-    let until = tokio::time::Instant::now() + Duration::from_secs(20);
+    let until = Instant::now() + Duration::from_secs(20);
     let (mut desktop, mut phone) = confirmed_workers(until).await?;
     let session = Session::random()?;
     let key = session.transport_key();
     let encrypted = desktop.call(6, key.as_ref()).await?;
     let received = phone.call(7, &encrypted).await?;
-    let client_session = Session::from_bootstrap(&teamy_broker_handoff::wire::hex(&received))?;
+    let client_session = Session::from_bootstrap(&wire::hex(&received))?;
     drop(received);
     drop(key);
     let engine = Arc::new(Engine::new(
@@ -201,7 +211,7 @@ async fn authenticated_preview_bridge_reconciles_and_rejects_stale_decisions() -
     );
     let server_endpoint = endpoint.clone();
     let ipc = tokio::spawn(async move {
-        crate::broker::server::serve_at(
+        server::serve_at(
             engine,
             teamy_cancellation::CancellationToken::new(),
             &server_endpoint,
@@ -212,9 +222,9 @@ async fn authenticated_preview_bridge_reconciles_and_rejects_stale_decisions() -
     let client = Client::new(None)?
         .with_endpoint(endpoint)
         .with_deadlines(Duration::from_secs(2), Duration::from_secs(5));
-    tokio::time::timeout(Duration::from_secs(2), async {
+    time::timeout(Duration::from_secs(2), async {
         while client.shared_preview_state().await.is_err() {
-            tokio::task::yield_now().await;
+            task::yield_now().await;
         }
     })
     .await?;
@@ -255,12 +265,11 @@ async fn authenticated_preview_bridge_reconciles_and_rejects_stale_decisions() -
         client_session.open(nonce.as_bytes(), &reply)?.as_slice(),
         b"stale"
     );
-    let challenge = teamy_broker_handoff::wire::random::<32>()?;
+    let challenge = wire::random::<32>()?;
     let poll = client_session.seal(teamy_broker_handoff::POLL_AAD, &challenge)?;
     let reply = exchange(&mut socket, &mut phone, "poll", poll).await?;
-    let pending: Vec<Pending> = facet_json::from_str(std::str::from_utf8(
-        &client_session.open(&challenge, &reply)?,
-    )?)?;
+    let pending: Vec<Pending> =
+        facet_json::from_str(str::from_utf8(&client_session.open(&challenge, &reply)?)?)?;
     assert!(pending.is_empty());
     assert_eq!(client.status().await?.active_leases, 0);
     client.stop().await?;
@@ -276,16 +285,13 @@ async fn authenticated_preview_bridge_reconciles_and_rejects_stale_decisions() -
 
 async fn preview_socket(
     desktop: JavaPairingWorker,
-    until: tokio::time::Instant,
+    until: Instant,
     session: Session,
     client: Client,
     trace: Arc<super::preview_phase::PreviewTrace>,
-) -> eyre::Result<(
-    tokio::net::TcpStream,
-    tokio::task::JoinHandle<eyre::Result<()>>,
-)> {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let socket = tokio::net::TcpStream::connect(listener.local_addr()?).await?;
+) -> eyre::Result<(TcpStream, JoinHandle<eyre::Result<()>>)> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let socket = TcpStream::connect(listener.local_addr()?).await?;
     let (server, _) = listener.accept().await?;
     drop(listener);
     let actor = PairedSocket {

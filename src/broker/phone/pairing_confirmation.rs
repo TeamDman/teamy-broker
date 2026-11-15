@@ -1,6 +1,14 @@
 //! One scoped, ephemeral confirmation; no secret-bearing Debug output or logging.
+use crate::protocol::pairing_comparison::PairingInspection;
+use crate::protocol::phone_status::PhoneFailureCategory;
+use crate::protocol::phone_status::PhonePhase;
+use std::fmt::Debug;
+use std::fmt::Formatter;
+use std::fmt::Result as FmtResult;
+use std::io::Error as IoError;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::Weak;
 use std::time::Instant;
 use zeroize::Zeroizing;
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -21,12 +29,12 @@ pub(crate) struct Attempt {
     pub until: Instant,
     pub expires_unix_ms: u64,
     state: Mutex<State>,
-    diagnostic: Mutex<std::sync::Weak<super::Controller>>,
+    diagnostic: Mutex<Weak<super::Controller>>,
     #[cfg(test)]
     events: Mutex<Option<Arc<super::faithful_integration::Events>>>,
 }
-impl std::fmt::Debug for Attempt {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Debug for Attempt {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         f.write_str("PairingAttempt([redacted])")
     }
 }
@@ -36,7 +44,7 @@ impl Attempt {
             id: uuid::Uuid::new_v4().to_string(),
             until,
             expires_unix_ms,
-            diagnostic: Mutex::new(std::sync::Weak::new()),
+            diagnostic: Mutex::new(Weak::new()),
             #[cfg(test)]
             events: Mutex::new(None),
             state: Mutex::new(State {
@@ -46,26 +54,26 @@ impl Attempt {
             }),
         })
     }
-    pub fn track(&self, controller: std::sync::Weak<super::Controller>) {
+    pub fn track(&self, controller: Weak<super::Controller>) {
         if let Ok(mut d) = self.diagnostic.lock() {
             *d = controller;
         }
     }
-    pub fn stage(&self, stage: crate::protocol::phone_status::PhonePhase) {
+    pub fn stage(&self, stage: PhonePhase) {
         if let Ok(d) = self.diagnostic.lock()
             && let Some(c) = d.upgrade()
         {
             c.phase(stage);
         }
     }
-    pub fn failure(&self, category: crate::protocol::phone_status::PhoneFailureCategory) {
+    pub fn failure(&self, category: PhoneFailureCategory) {
         if let Ok(d) = self.diagnostic.lock()
             && let Some(c) = d.upgrade()
         {
             c.failure(category);
         }
     }
-    pub fn transport_failure(&self, error: &std::io::Error) {
+    pub fn transport_failure(&self, error: &IoError) {
         if let Ok(d) = self.diagnostic.lock()
             && let Some(c) = d.upgrade()
         {
@@ -107,10 +115,7 @@ impl Attempt {
         s.code = Some(code);
         Ok(())
     }
-    pub fn inspect(
-        &self,
-        id: &str,
-    ) -> eyre::Result<crate::protocol::pairing_comparison::PairingInspection> {
+    pub fn inspect(&self, id: &str) -> eyre::Result<PairingInspection> {
         eyre::ensure!(id == self.id, "pairing attempt unavailable");
         let mut s = self
             .state
@@ -121,7 +126,7 @@ impl Attempt {
             .code
             .as_ref()
             .ok_or_else(|| eyre::eyre!("comparison not ready"))?;
-        Ok(crate::protocol::pairing_comparison::PairingInspection {
+        Ok(PairingInspection {
             attempt_id: self.id.clone(),
             expires_unix_ms: self.expires_unix_ms,
             comparison: code.to_string(),

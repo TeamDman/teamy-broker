@@ -3,9 +3,13 @@ use crate::protocol::AcquireRequest;
 use crate::protocol::ApprovalPreviewDisposition as D;
 use crate::protocol::Backend;
 use crate::protocol::credential_context::CredentialContext;
+use std::future;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
+use tokio::task;
+use tokio::time;
 use zeroize::Zeroizing;
 struct Guard(Arc<AtomicBool>);
 impl Drop for Guard {
@@ -124,17 +128,17 @@ async fn user_supply_cancels_pending_provider_future_and_keeps_request_context()
         super::credential_approvals::resolve(pending, async move {
             let _guard = Guard(d);
             s.store(true, Ordering::SeqCst);
-            std::future::pending::<eyre::Result<Zeroizing<Vec<u8>>>>().await
+            future::pending::<eyre::Result<Zeroizing<Vec<u8>>>>().await
         })
         .await
     });
     while !started.load(Ordering::SeqCst) {
-        tokio::task::yield_now().await;
+        task::yield_now().await;
     }
     assert!(hub.snapshot().unwrap().credential.is_some());
     assert!(shared.supply(Zeroizing::new(b"synthetic-user".to_vec())));
     assert_eq!(
-        &*tokio::time::timeout(std::time::Duration::from_secs(1), actor)
+        &*time::timeout(Duration::from_secs(1), actor)
             .await
             .unwrap()
             .unwrap()
@@ -158,7 +162,7 @@ async fn provider_failure_keeps_supply_available_without_duplicate_provider() {
         .await
     });
     while !shared.provider_failed.load(Ordering::Acquire) {
-        tokio::task::yield_now().await;
+        task::yield_now().await;
     }
     assert!(shared.outcome().is_none());
     assert!(!shared.request_provider());

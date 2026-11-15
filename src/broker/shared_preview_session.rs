@@ -4,7 +4,9 @@ use crate::protocol::Request;
 use crate::protocol::Response;
 use crate::protocol::SharedPreviewState;
 use crate::protocol::{self};
+use std::time::Duration;
 use tokio::net::windows::named_pipe::NamedPipeServer;
+use tokio::time;
 pub(super) async fn execute(
     pipe: &mut NamedPipeServer,
     peer: &Hello,
@@ -17,7 +19,7 @@ pub(super) async fn execute(
         "shared preview capability not negotiated"
     );
     let hub = super::shared_preview::SharedPreviewHub::resident();
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    time::timeout(Duration::from_secs(5), async {
         if request.operation == "preview-state" {
             protocol::wire::write(pipe, &Response::code("preview-state")).await?;
             protocol::wire::write(

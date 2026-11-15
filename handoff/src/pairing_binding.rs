@@ -29,14 +29,10 @@ impl PairingBinding {
             session_id: crate::wire::hex(&crate::wire::random::<16>()?),
             nonce: crate::wire::hex(&crate::wire::random::<32>()?),
             desktop: crate::DESKTOP.into(),
-            desktop_node: crate::phone_config::DESKTOP_NODE.into(),
+            desktop_node: "synthetic-desktop".into(),
             phone: crate::PHONE.into(),
-            phone_node: crate::phone_config::PHONE_NODE.into(),
-            endpoint: format!(
-                "{}:{}",
-                crate::phone_config::DESKTOP,
-                crate::phone_config::PORT
-            ),
+            phone_node: "synthetic-phone".into(),
+            endpoint: "127.0.0.1:43188".into(),
             scope: "dummy-only/session-only/ukey2-p256".into(),
             pairing_expires_unix_ms: now
                 .checked_add(90_000)

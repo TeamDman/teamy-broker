@@ -2,12 +2,18 @@ use super::Controller;
 use crate::protocol::phone_status::PhoneFailure;
 use crate::protocol::phone_status::PhoneFailureCategory;
 use crate::protocol::phone_status::PhonePhase;
+use crate::protocol::phone_status::PhoneTransportKind as K;
+use crate::protocol::wire;
+use rustls::CertificateError;
+use rustls::Error;
+use std::io::Error as IoError;
+use std::io::ErrorKind;
 use std::sync::Arc;
 impl Controller {
     pub(crate) fn phase(&self, phase: PhonePhase) {
         if let Ok(mut state) = self.diagnostic.lock() {
             state.phase = phase;
-            state.phase_started_unix_ms = crate::protocol::wire::unix_ms().ok();
+            state.phase_started_unix_ms = wire::unix_ms().ok();
         }
     }
     pub(crate) fn failure(&self, category: PhoneFailureCategory) {
@@ -18,27 +24,26 @@ impl Controller {
                 attempt: state.attempts,
                 transport_kind: None,
                 transport_os_code: None,
-                elapsed_phase_ms: crate::protocol::wire::unix_ms()
+                elapsed_phase_ms: wire::unix_ms()
                     .ok()
                     .zip(state.phase_started_unix_ms)
                     .and_then(|(now, start)| now.checked_sub(start)),
             });
         }
     }
-    pub(crate) fn transport_failure(&self, error: &std::io::Error) {
-        use crate::protocol::phone_status::PhoneTransportKind as K;
+    pub(crate) fn transport_failure(&self, error: &IoError) {
         self.failure(PhoneFailureCategory::ReadTransport);
         if let Ok(mut state) = self.diagnostic.lock()
             && let Some(failure) = &mut state.last_failure
         {
             failure.transport_os_code = error.raw_os_error();
             failure.transport_kind = Some(match error.kind() {
-                std::io::ErrorKind::ConnectionReset => K::ConnectionReset,
-                std::io::ErrorKind::ConnectionAborted => K::ConnectionAborted,
-                std::io::ErrorKind::BrokenPipe => K::BrokenPipe,
-                std::io::ErrorKind::TimedOut => K::TimedOut,
-                std::io::ErrorKind::UnexpectedEof => K::UnexpectedEof,
-                std::io::ErrorKind::NotConnected => K::NotConnected,
+                ErrorKind::ConnectionReset => K::ConnectionReset,
+                ErrorKind::ConnectionAborted => K::ConnectionAborted,
+                ErrorKind::BrokenPipe => K::BrokenPipe,
+                ErrorKind::TimedOut => K::TimedOut,
+                ErrorKind::UnexpectedEof => K::UnexpectedEof,
+                ErrorKind::NotConnected => K::NotConnected,
                 _ => K::Other,
             });
         }
@@ -74,7 +79,7 @@ impl Attempt {
                 attempt: state.attempts,
                 transport_kind: None,
                 transport_os_code: None,
-                elapsed_phase_ms: crate::protocol::wire::unix_ms()
+                elapsed_phase_ms: wire::unix_ms()
                     .ok()
                     .zip(state.phase_started_unix_ms)
                     .and_then(|(now, start)| now.checked_sub(start)),
@@ -89,9 +94,7 @@ impl Drop for Attempt {
         }
     }
 }
-pub(super) fn tls_category(error: &std::io::Error) -> PhoneFailureCategory {
-    use rustls::CertificateError;
-    use rustls::Error;
+pub(super) fn tls_category(error: &IoError) -> PhoneFailureCategory {
     match error
         .get_ref()
         .and_then(|inner| inner.downcast_ref::<Error>())

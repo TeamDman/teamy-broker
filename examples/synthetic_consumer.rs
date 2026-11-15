@@ -1,4 +1,7 @@
 //! End-to-end isolated consumer using only synthetic credentials and injected approval.
+use std::env;
+use std::io;
+use tokio::task;
 #[path = "../tests/support/mod.rs"]
 mod support;
 use std::io::Write;
@@ -10,9 +13,9 @@ use teamy_broker::sdk::Client;
 use teamy_broker::sdk::resolve_provider;
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
-    let args: Vec<_> = std::env::args().skip(1).collect();
+    let args: Vec<_> = env::args().skip(1).collect();
     let cli = (args.len() == 2 && args[0] == "--provider").then(|| args[1].as_str());
-    let environment = std::env::var("TEAMY_SYNTHETIC_CREDENTIAL_PROVIDER").ok();
+    let environment = env::var("TEAMY_SYNTHETIC_CREDENTIAL_PROVIDER").ok();
     let provider = resolve_provider(cli, environment.as_deref())?;
     eyre::ensure!(
         provider == "teamy-broker",
@@ -32,12 +35,12 @@ async fn main() -> eyre::Result<()> {
     };
     let client = Client::new(None)?.with_endpoint(endpoint);
     while !client.status().await?.running {
-        tokio::task::yield_now().await;
+        task::yield_now().await;
     }
     let secret = client.acquire(support::request(Backend::Memory)).await?;
     let length = secret.expose(<[u8]>::len)?;
     writeln!(
-        std::io::stdout().lock(),
+        io::stdout().lock(),
         "Synthetic credential consumed ({length} bytes); secret value omitted"
     )?;
     client.purge(Some(secret.lease_id.clone())).await?;

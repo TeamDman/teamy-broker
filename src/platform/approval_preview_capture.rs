@@ -1,5 +1,7 @@
 use crate::protocol::ApprovalPreviewEvent;
 use crate::protocol::ApprovalPreviewEventKind;
+use crate::protocol::wire;
+use std::mem;
 use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::Foundation::RECT;
@@ -53,7 +55,7 @@ pub(crate) fn capture(
     // SAFETY: selects a monitor for metadata only; does not move the window.
     let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
     let mut info = MONITORINFO {
-        cbSize: u32::try_from(std::mem::size_of::<MONITORINFO>()).unwrap_or(0),
+        cbSize: u32::try_from(mem::size_of::<MONITORINFO>()).unwrap_or(0),
         rcMonitor: zero_rect(),
         rcWork: zero_rect(),
         dwFlags: 0,
@@ -73,7 +75,7 @@ pub(crate) fn capture(
     let foreground_matches = unsafe { GetForegroundWindow() == hwnd };
     ApprovalPreviewEvent {
         kind,
-        unix_ms: crate::protocol::wire::unix_ms().unwrap_or_default(),
+        unix_ms: wire::unix_ms().unwrap_or_default(),
         hwnd: u64::try_from(hwnd as usize).unwrap_or_default(),
         pid,
         thread_id,

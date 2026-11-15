@@ -1,3 +1,10 @@
+use std::sync::atomic::AtomicUsize;
+use teamy_broker::broker::grant::Grant;
+use teamy_broker::protocol::Status;
+use tokio::sync::Notify;
+use tokio::task;
+use tokio::task::JoinHandle;
+use tokio::time;
 mod support;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -12,24 +19,22 @@ use teamy_broker::protocol::Backend;
 use teamy_broker::protocol::FailureKind;
 use teamy_broker::protocol::stop_reason::StopReason;
 
-async fn wait_for_calls(calls: &std::sync::atomic::AtomicUsize) {
-    tokio::time::timeout(Duration::from_secs(2), async {
+async fn wait_for_calls(calls: &AtomicUsize) {
+    time::timeout(Duration::from_secs(2), async {
         while calls.load(Ordering::SeqCst) == 0 {
-            tokio::task::yield_now().await;
+            task::yield_now().await;
         }
     })
     .await
     .unwrap();
 }
-async fn status(engine: &Engine) -> teamy_broker::protocol::Status {
-    tokio::time::timeout(Duration::from_millis(200), engine.status())
+async fn status(engine: &Engine) -> Status {
+    time::timeout(Duration::from_millis(200), engine.status())
         .await
         .unwrap()
         .unwrap()
 }
-fn operation(
-    engine: &Arc<Engine>,
-) -> tokio::task::JoinHandle<eyre::Result<teamy_broker::broker::grant::Grant>> {
+fn operation(engine: &Arc<Engine>) -> JoinHandle<eyre::Result<Grant>> {
     let engine = Arc::clone(engine);
     tokio::spawn(async move {
         engine
@@ -115,7 +120,7 @@ async fn status_is_responsive_for_pending_open_and_queued_approvals_and_cancella
     for dialog in [false, true] {
         let approval = Arc::new(FakeApproval {
             dialog,
-            release: Some(Arc::new(tokio::sync::Notify::new())),
+            release: Some(Arc::new(Notify::new())),
             ..Default::default()
         });
         let engine = Arc::new(Engine::new(
@@ -128,9 +133,9 @@ async fn status_is_responsive_for_pending_open_and_queued_approvals_and_cancella
         let first = operation(&engine);
         wait_for_calls(&approval.calls).await;
         let second = operation(&engine);
-        tokio::time::timeout(Duration::from_secs(2), async {
+        time::timeout(Duration::from_secs(2), async {
             while status(&engine).await.queued_requests != 1 {
-                tokio::task::yield_now().await;
+                task::yield_now().await;
             }
         })
         .await
@@ -164,9 +169,9 @@ async fn status_is_responsive_for_pending_open_and_queued_approvals_and_cancella
 }
 #[tokio::test]
 async fn upstream_wait_is_not_reported_as_an_open_dialog_and_force_prevents_publication() {
-    let release = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(Notify::new());
     let adapter = Arc::new(FakeAdapter {
-        release: Some(Arc::<tokio::sync::Notify>::clone(&release)),
+        release: Some(Arc::<Notify>::clone(&release)),
         ..Default::default()
     });
     let storage = Arc::new(FakeStorage::default());

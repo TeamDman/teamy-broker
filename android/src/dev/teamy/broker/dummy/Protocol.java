@@ -28,13 +28,13 @@ public final class Protocol {
         try { return Crypto.open(key, nonce, aad, ciphertext); }
         finally { Arrays.fill(nonce, (byte)0); Arrays.fill(ciphertext, (byte)0); }
     }
-    public static JSONObject exchange(Socket socket, boolean tls, String operation, JSONObject envelope) throws Exception {
+    static JSONObject exchange(Socket socket, boolean tls, String operation, JSONObject envelope, PrivatePhoneConfig profile) throws Exception {
         // Desktop reachability requires a separately authorized test tunnel; none is configured here.
         java.util.concurrent.ScheduledExecutorService timer = java.util.concurrent.Executors.newSingleThreadScheduledExecutor();
         java.util.concurrent.ScheduledFuture<?> watchdog = timer.schedule(() -> { try { socket.close(); } catch (Exception ignored) {} }, 8, java.util.concurrent.TimeUnit.SECONDS);
         try {
-        if (tls) PrivatePhoneConfig.requireConfigured();
-        socket.connect(new InetSocketAddress(tls ? PinnedTls.DESKTOP : "127.0.0.1", tls ? PinnedTls.PORT : 43187), 3000);
+        if (tls && profile==null) throw new Exception("phone configuration unavailable");
+        socket.connect(new InetSocketAddress(tls ? profile.desktop : "127.0.0.1", tls ? PrivatePhoneConfig.PORT : 43187), 3000);
         socket.setSoTimeout(5000);
         if (tls) ((SSLSocket)socket).startHandshake();
         byte[] packet = new JSONObject().put("operation", operation).put("envelope", envelope).toString().getBytes(StandardCharsets.UTF_8);

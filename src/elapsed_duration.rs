@@ -15,16 +15,19 @@ pub fn warn_if_exceeded(command: &str, elapsed: Duration, threshold: Option<Dura
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Result as IoResult;
+    use std::io::Write;
     use std::sync::Arc;
     use std::sync::Mutex;
+    use tracing::subscriber;
     #[derive(Clone)]
     struct Capture(Arc<Mutex<Vec<u8>>>);
-    impl std::io::Write for Capture {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+    impl Write for Capture {
+        fn write(&mut self, buf: &[u8]) -> IoResult<usize> {
             self.0.lock().unwrap().extend_from_slice(buf);
             Ok(buf.len())
         }
-        fn flush(&mut self) -> std::io::Result<()> {
+        fn flush(&mut self) -> IoResult<()> {
             Ok(())
         }
     }
@@ -43,7 +46,7 @@ mod tests {
                 .with_ansi(false)
                 .with_writer(move || writer.clone())
                 .finish();
-            tracing::subscriber::with_default(subscriber, || {
+            subscriber::with_default(subscriber, || {
                 warn_if_exceeded(
                     "fixture",
                     Duration::from_millis(elapsed),

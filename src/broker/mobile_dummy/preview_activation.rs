@@ -1,10 +1,20 @@
 use super::preview_phase::PreviewTrace;
+use crate::paths::AppHome;
+use crate::protocol::wire;
 use facet::Facet;
 use sha2::Digest;
 use sha2::Sha256;
+use std::env;
+use std::fmt::Debug;
+use std::fmt::Formatter;
+use std::fmt::Result as FmtResult;
+use std::fs;
+use std::fs::File;
+use std::fs::OpenOptions;
 use std::io::Read;
 use std::path::Path;
 use std::path::PathBuf;
+use std::str;
 use std::sync::Arc;
 /// Same-user action-time audit authorization, not device trust or cryptographic enrollment.
 #[derive(Facet)]
@@ -27,8 +37,8 @@ pub struct PreviewActivation {
     start_before: u64,
     trace: Arc<PreviewTrace>,
 }
-impl std::fmt::Debug for PreviewActivation {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Debug for PreviewActivation {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         f.write_str("PreviewActivation([one bounded attempt])")
     }
 }
@@ -36,13 +46,14 @@ impl PreviewActivation {
     /// # Errors
     /// Rejects missing, stale, reused, wrong-artifact or broadened-scope same-user receipts.
     pub fn consume(receipt_path: &Path, phase_path: &Path) -> eyre::Result<Self> {
-        let now = crate::protocol::wire::unix_ms()?;
-        let executable = std::env::current_exe()
+        let now = wire::unix_ms()?;
+        let executable = env::current_exe()
             .map_err(|_redacted_error| eyre::eyre!("candidate identity unavailable"))?;
-        let bytes = std::fs::read(executable)
+        let bytes = fs::read(executable)
             .map_err(|_redacted_error| eyre::eyre!("candidate identity unavailable"))?;
         let hash = format!("{:X}", Sha256::digest(bytes));
-        let start_before = consume_checked(receipt_path, now, &hash)?;
+        let profile = super::phone_profile::PhoneProfile::load(&AppHome::resolve()?)?;
+        let start_before = consume_checked(receipt_path, now, &hash, &profile)?;
         let trace = Arc::new(PreviewTrace::create(phase_path)?);
         Ok(Self {
             start_before,
@@ -53,7 +64,7 @@ impl PreviewActivation {
     /// A receipt permits prompt launch only within its nonrenewable two-minute action-time window.
     pub fn require_live(&self) -> eyre::Result<()> {
         eyre::ensure!(
-            crate::protocol::wire::unix_ms()? < self.start_before && !self.trace.failed(),
+            wire::unix_ms()? < self.start_before && !self.trace.failed(),
             "preview activation expired or diagnostics unavailable"
         );
         Ok(())
@@ -68,8 +79,13 @@ fn consumed_path(path: &Path) -> PathBuf {
     name.push(".consumed");
     PathBuf::from(name)
 }
-fn consume_checked(path: &Path, now: u64, hash: &str) -> eyre::Result<u64> {
-    let mut file = std::fs::File::open(path)
+fn consume_checked(
+    path: &Path,
+    now: u64,
+    hash: &str,
+    profile: &super::phone_profile::PhoneProfile,
+) -> eyre::Result<u64> {
+    let mut file = File::open(path)
         .map_err(|_redacted_error| eyre::eyre!("preview approval receipt unavailable"))?;
 
     let mut bytes = Vec::new();
@@ -79,7 +95,7 @@ fn consume_checked(path: &Path, now: u64, hash: &str) -> eyre::Result<u64> {
         .map_err(|_redacted_error| eyre::eyre!("preview approval receipt unavailable"))?;
     eyre::ensure!(bytes.len() <= 4096, "preview approval receipt rejected");
     let receipt: ApprovalReceipt = facet_json::from_str(
-        std::str::from_utf8(&bytes)
+        str::from_utf8(&bytes)
             .map_err(|_redacted_error| eyre::eyre!("preview approval receipt rejected"))?,
     )
     .map_err(|_redacted_error| eyre::eyre!("preview approval receipt rejected"))?;
@@ -88,13 +104,9 @@ fn consume_checked(path: &Path, now: u64, hash: &str) -> eyre::Result<u64> {
             && uuid::Uuid::parse_str(&receipt.approval_id).is_ok()
             && receipt.scope == "resident-no-vault-preview-v1"
             && receipt.desktop
-                == format!(
-                    "{}:{}",
-                    super::tailnet_peer::DESKTOP,
-                    super::tailnet_peer::PORT
-                )
-            && receipt.phone == super::tailnet_peer::PHONE.to_string()
-            && receipt.phone_node == super::tailnet_peer::PHONE_NODE
+                == format!("{}:{}", profile.desktop.get(), super::tailnet_peer::PORT)
+            && receipt.phone == profile.phone.get().to_string()
+            && receipt.phone_node.as_str() == profile.phone_node.as_str()
             && receipt.pairing_seconds == 90
             && receipt.total_seconds == 180
             && receipt.request_seconds == 60
@@ -107,7 +119,7 @@ fn consume_checked(path: &Path, now: u64, hash: &str) -> eyre::Result<u64> {
                 .is_some_and(|window| window <= 120_000),
         "preview approval receipt rejected"
     );
-    std::fs::OpenOptions::new()
+    OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(consumed_path(path))
@@ -119,26 +131,28 @@ fn consume_checked(path: &Path, now: u64, hash: &str) -> eyre::Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::thread;
     struct Fixture(PathBuf);
     impl Fixture {
         fn new() -> Self {
-            let dir = std::env::temp_dir()
-                .join(format!("teamy-preview-approval-{}", uuid::Uuid::new_v4()));
-            std::fs::create_dir(&dir).unwrap();
+            let dir =
+                env::temp_dir().join(format!("teamy-preview-approval-{}", uuid::Uuid::new_v4()));
+            fs::create_dir(&dir).unwrap();
             Self(dir.join("approval.json"))
         }
         fn write(&self, scope: &str, start_before: u64, hash: &str) {
+            let profile = super::super::phone_profile::synthetic();
             let receipt = ApprovalReceipt {
                 version: 1,
                 approval_id: uuid::Uuid::new_v4().to_string(),
                 scope: scope.into(),
                 desktop: format!(
                     "{}:{}",
-                    super::super::tailnet_peer::DESKTOP,
+                    profile.desktop.get(),
                     super::super::tailnet_peer::PORT
                 ),
-                phone: super::super::tailnet_peer::PHONE.to_string(),
-                phone_node: super::super::tailnet_peer::PHONE_NODE.into(),
+                phone: profile.phone.get().to_string(),
+                phone_node: profile.phone_node.as_str().to_owned(),
                 pairing_seconds: 90,
                 total_seconds: 180,
                 request_seconds: 60,
@@ -146,15 +160,15 @@ mod tests {
                 start_before_unix_ms: start_before,
                 candidate_sha256: hash.into(),
             };
-            std::fs::write(&self.0, facet_json::to_string(&receipt).unwrap()).unwrap();
+            fs::write(&self.0, facet_json::to_string(&receipt).unwrap()).unwrap();
         }
     }
     impl Drop for Fixture {
         fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.0);
-            let _ = std::fs::remove_file(consumed_path(&self.0));
+            let _ = fs::remove_file(&self.0);
+            let _ = fs::remove_file(consumed_path(&self.0));
             if let Some(dir) = self.0.parent() {
-                let _ = std::fs::remove_dir(dir);
+                let _ = fs::remove_dir(dir);
             }
         }
     }
@@ -162,12 +176,53 @@ mod tests {
     fn action_time_scope_artifact_expiry_and_replay_fail_closed() {
         let fixture = Fixture::new();
         fixture.write("wrong-scope", 2000, "A");
-        drop(consume_checked(&fixture.0, 1001, "A").unwrap_err());
+        drop(
+            consume_checked(
+                &fixture.0,
+                1001,
+                "A",
+                &super::super::phone_profile::synthetic(),
+            )
+            .unwrap_err(),
+        );
         fixture.write("resident-no-vault-preview-v1", 2000, "A");
-        drop(consume_checked(&fixture.0, 2000, "A").unwrap_err());
-        drop(consume_checked(&fixture.0, 1001, "B").unwrap_err());
-        assert_eq!(consume_checked(&fixture.0, 1001, "A").unwrap(), 2000);
-        drop(consume_checked(&fixture.0, 1001, "A").unwrap_err());
+        drop(
+            consume_checked(
+                &fixture.0,
+                2000,
+                "A",
+                &super::super::phone_profile::synthetic(),
+            )
+            .unwrap_err(),
+        );
+        drop(
+            consume_checked(
+                &fixture.0,
+                1001,
+                "B",
+                &super::super::phone_profile::synthetic(),
+            )
+            .unwrap_err(),
+        );
+        assert_eq!(
+            consume_checked(
+                &fixture.0,
+                1001,
+                "A",
+                &super::super::phone_profile::synthetic()
+            )
+            .unwrap(),
+            2000
+        );
+        drop(
+            consume_checked(
+                &fixture.0,
+                1001,
+                "A",
+                &super::super::phone_profile::synthetic(),
+            )
+            .unwrap_err(),
+        );
     }
     #[test]
     fn concurrent_receipt_consumption_has_one_winner() {
@@ -176,7 +231,10 @@ mod tests {
         let handles: Vec<_> = (0..2)
             .map(|_| {
                 let path = fixture.0.clone();
-                std::thread::spawn(move || consume_checked(&path, 1001, "A").is_ok())
+                thread::spawn(move || {
+                    consume_checked(&path, 1001, "A", &super::super::phone_profile::synthetic())
+                        .is_ok()
+                })
             })
             .collect();
         assert_eq!(

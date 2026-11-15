@@ -42,7 +42,8 @@ final class PhoneIdentity {
             Signature verify=Signature.getInstance("NONEwithECDSA");verify.initVerify(store.getCertificate(alias).getPublicKey());verify.update(digest);if(!verify.verify(signed))throw new Exception("TLS key self-test rejected");
         }finally{java.util.Arrays.fill(digest,(byte)0);if(signed!=null)java.util.Arrays.fill(signed,(byte)0);}
     }
-    static boolean paired(Context context){try{return selection(context).active().paired();}catch(RuntimeException failure){return false;}}
+    static boolean storedIdentityPaired(Context context){return selection(context).active().paired();}
+    static boolean paired(Context context){try{return storedIdentityPaired(context);}catch(RuntimeException failure){return false;}}
     static void remember(Context context,byte[] desktop,String alias) throws Exception {
         PhoneKeyPolicy.alias(alias);requireTlsKey(store(),alias);
         if(desktop.length==0||desktop.length>4096)throw new Exception("identity rejected");

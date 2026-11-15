@@ -1,21 +1,29 @@
+use crate::platform::cache_reader;
+use crate::platform::detached_process;
+use crate::platform::identity;
 use crate::protocol::Hello;
 use crate::protocol::Request;
 use crate::protocol::Response;
 use crate::protocol::{self};
+use std::fmt;
+use std::io;
+use std::path::PathBuf;
 use std::time::Duration;
 use std::time::Instant;
 use tokio::net::windows::named_pipe::ClientOptions;
 use tokio::net::windows::named_pipe::NamedPipeClient;
+use tokio::time::sleep;
+use tokio::time::timeout;
 #[derive(Clone)]
 pub struct Client {
     endpoint: String,
     start_arguments: Vec<String>,
-    broker_executable: Option<std::path::PathBuf>,
+    broker_executable: Option<PathBuf>,
     readiness: Duration,
     pub(super) request_timeout: Duration,
 }
-impl std::fmt::Debug for Client {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for Client {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("Client([redacted configuration])")
     }
 }
@@ -24,9 +32,9 @@ impl Client {
     /// # Errors
     ///
     /// Returns an error if the current user's identity cannot be resolved.
-    pub fn new(broker_executable: Option<std::path::PathBuf>) -> eyre::Result<Self> {
+    pub fn new(broker_executable: Option<PathBuf>) -> eyre::Result<Self> {
         Ok(Self {
-            endpoint: crate::platform::identity::endpoint()?,
+            endpoint: identity::endpoint()?,
             start_arguments: vec!["serve".into()],
             broker_executable,
             readiness: Duration::from_secs(10),
@@ -56,7 +64,7 @@ impl Client {
         start: bool,
         require_capability: Option<&str>,
     ) -> eyre::Result<NamedPipeClient> {
-        tokio::time::timeout(self.readiness, async {
+        timeout(self.readiness, async {
             let mut attempted = false;
             loop {
                 match ClientOptions::new().open(&self.endpoint) {
@@ -98,13 +106,13 @@ impl Client {
                             let exe = self.broker_executable.as_ref().ok_or_else(|| {
                                 eyre::eyre!("broker unavailable; autostart not configured")
                             })?;
-                            crate::platform::detached_process::spawn(exe, &self.start_arguments)?;
+                            detached_process::spawn(exe, &self.start_arguments)?;
                             attempted = true;
                         }
                         if !start && e.raw_os_error() == Some(2) {
                             eyre::bail!("broker unavailable")
                         }
-                        tokio::time::sleep(Duration::from_millis(25)).await;
+                        sleep(Duration::from_millis(25)).await;
                     }
                     Err(error) => return Err(connection_error(&error)),
                 }
@@ -135,7 +143,7 @@ impl Client {
     ) -> eyre::Result<super::Secret> {
         request.validate()?;
         let started = Instant::now();
-        tokio::time::timeout(self.request_timeout, async {
+        timeout(self.request_timeout, async {
             let mut pipe = self
                 .connect(
                     !fixture,
@@ -206,8 +214,8 @@ impl Client {
         let first = self
             .control(Request::control("validate", Some(lease_id.clone())))
             .await?;
-        let envelope = crate::platform::cache_reader::read(&backend)?
-            .ok_or_else(|| eyre::eyre!("cache unavailable"))?;
+        let envelope =
+            cache_reader::read(&backend)?.ok_or_else(|| eyre::eyre!("cache unavailable"))?;
         eyre::ensure!(
             envelope.len() >= 32 && &envelope[..8] == b"TEAMYB01",
             "invalid cache envelope"
@@ -240,7 +248,7 @@ impl Client {
     }
     async fn control(&self, request: Request) -> eyre::Result<Response> {
         request.validate()?;
-        tokio::time::timeout(self.request_timeout, async {
+        timeout(self.request_timeout, async {
             let mut pipe = self
                 .connect(
                     false,
@@ -315,14 +323,14 @@ impl Client {
                         Instant::now() < deadline,
                         "broker shutdown deadline exceeded"
                     );
-                    tokio::time::sleep(Duration::from_millis(25)).await;
+                    sleep(Duration::from_millis(25)).await;
                 }
             }
         }
     }
 }
 
-fn connection_error(error: &std::io::Error) -> eyre::Report {
+fn connection_error(error: &io::Error) -> eyre::Report {
     if error.raw_os_error() == Some(5) {
         eyre::eyre!("broker access denied")
     } else {
@@ -332,14 +340,15 @@ fn connection_error(error: &std::io::Error) -> eyre::Report {
 
 #[cfg(test)]
 mod connection_error_tests {
+    use std::io;
     #[test]
     fn access_denied_is_distinct_and_other_io_payloads_are_redacted() {
         assert_eq!(
-            super::connection_error(&std::io::Error::from_raw_os_error(5)).to_string(),
+            super::connection_error(&io::Error::from_raw_os_error(5)).to_string(),
             "broker access denied"
         );
         assert_eq!(
-            super::connection_error(&std::io::Error::other("SYNTHETIC_PRIVATE_PATH")).to_string(),
+            super::connection_error(&io::Error::other("SYNTHETIC_PRIVATE_PATH")).to_string(),
             "broker connection failed"
         );
     }

@@ -3,6 +3,7 @@ use crate::broker::approval_decision::ApprovalDecision;
 use crate::broker::shared_preview::SharedPreview;
 use crate::broker::work_guard::WorkGuard;
 use crate::protocol::AcquireRequest;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 #[derive(Debug)]
@@ -14,7 +15,7 @@ impl Approval for SharedApproval {
         _pid: u32,
         _cancel: Arc<AtomicBool>,
         _work: WorkGuard,
-    ) -> std::pin::Pin<Box<dyn Future<Output = eyre::Result<bool>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = eyre::Result<bool>> + Send + 'a>> {
         Box::pin(async { Err(eyre::eyre!("shared path required")) })
     }
     fn decision<'a>(
@@ -23,7 +24,7 @@ impl Approval for SharedApproval {
         _pid: u32,
         _cancel: Arc<AtomicBool>,
         _work: WorkGuard,
-    ) -> std::pin::Pin<Box<dyn Future<Output = eyre::Result<ApprovalDecision>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = eyre::Result<ApprovalDecision>> + Send + 'a>> {
         let shared = Arc::clone(&self.0);
         Box::pin(async move { Ok(ApprovalDecision::Shared(shared)) })
     }

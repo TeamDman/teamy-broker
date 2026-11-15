@@ -1,15 +1,31 @@
 //! Explicitly enrolled exact phone relationship; TLS 1.3 mutual authentication, preview-only.
+use crate::broker::engine::Engine;
+use crate::broker::shared_preview::SharedPreviewHub;
+use crate::protocol::AcquireRequest;
+use crate::protocol::ApprovalPreviewDisposition;
+use crate::protocol::SharedPreviewSnapshot;
+use crate::protocol::phone_status::PhoneConnectionState;
+use crate::protocol::phone_status::PhoneDiagnostic;
+use crate::protocol::phone_status::PhoneRuntimeState;
+use crate::protocol::wire;
+#[cfg(test)]
+use std::net::Ipv4Addr;
+use std::time::Duration;
+use tokio::time;
 mod diagnostic;
 mod identity;
 mod message;
 mod message_read;
 pub(crate) mod pairing_confirmation;
+mod phone_listener;
 mod resident;
 mod store;
 mod timing;
 mod transport;
-pub const ENROLLMENT_WINDOW: std::time::Duration = std::time::Duration::from_mins(5);
+pub const ENROLLMENT_WINDOW: Duration = Duration::from_mins(5);
 pub const SCOPE: &str = "persistent-no-vault-preview-v1";
+use crate::broker::mobile_dummy::phone_profile::PhoneProfile;
+use crate::paths::AppHome;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
@@ -32,14 +48,14 @@ pub struct Controller {
     pub(super) listener: AtomicBool,
     pub(super) runtime: AtomicU8,
     actor_active: AtomicBool,
-    diagnostic: Mutex<crate::protocol::phone_status::PhoneDiagnostic>,
+    diagnostic: Mutex<PhoneDiagnostic>,
 }
 pub use crate::protocol::PhoneStatus;
 #[derive(Debug)]
 enum PreviewHub {
     Resident,
     #[cfg(test)]
-    Isolated(Arc<crate::broker::shared_preview::SharedPreviewHub>),
+    Isolated(Arc<SharedPreviewHub>),
 }
 impl Controller {
     /// # Errors
@@ -63,7 +79,7 @@ impl Controller {
             listener: AtomicBool::new(false),
             runtime: AtomicU8::new(0),
             actor_active: AtomicBool::new(false),
-            diagnostic: Mutex::new(crate::protocol::phone_status::PhoneDiagnostic::default()),
+            diagnostic: Mutex::new(PhoneDiagnostic::default()),
         });
         let _ = INSTANCE.set(Arc::clone(&value));
         Ok(Arc::clone(INSTANCE.get().unwrap_or(&value)))
@@ -88,9 +104,9 @@ impl Controller {
                 .map(|a| a.id.clone()),
             listener: self.listener.load(Ordering::Acquire),
             connection: if self.connected.load(Ordering::Acquire) {
-                crate::protocol::phone_status::PhoneConnectionState::Connected
+                PhoneConnectionState::Connected
             } else {
-                crate::protocol::phone_status::PhoneConnectionState::Disconnected
+                PhoneConnectionState::Disconnected
             },
             runtime: self.runtime_status(),
             diagnostic: *self
@@ -98,18 +114,14 @@ impl Controller {
                 .lock()
                 .map_err(|_redacted| eyre::eyre!("phone diagnostics unavailable"))?,
             scope: SCOPE.into(),
-            peer: format!(
-                "{}/{}",
-                teamy_broker_handoff::phone_config::PHONE,
-                teamy_broker_handoff::phone_config::PHONE_NODE
-            ),
+            peer: "redacted".into(),
         })
     }
     /// # Errors
     /// Rejects unavailable protected state, invalid scope or conflicting relationship changes.
     pub fn arm(&self) -> eyre::Result<()> {
         eyre::ensure!(
-            self.runtime_status() != crate::protocol::phone_status::PhoneRuntimeState::Failed,
+            self.runtime_status() != PhoneRuntimeState::Failed,
             "phone actor failed; restart broker before pairing"
         );
         let mut record = self
@@ -124,7 +136,12 @@ impl Controller {
             "phone already paired or pairing active; revoke before replacing"
         );
         if record.is_none() {
-            let identity = identity::generate()?;
+            let address = match &self.hub {
+                PreviewHub::Resident => PhoneProfile::load(&AppHome::resolve()?)?.desktop.get(),
+                #[cfg(test)]
+                PreviewHub::Isolated(_) => Ipv4Addr::LOCALHOST,
+            };
+            let identity = identity::generate(address)?;
             self.store.save(&identity)?;
             *record = Some(identity);
         }
@@ -139,7 +156,7 @@ impl Controller {
             .map_err(|_redacted_error| eyre::eyre!("pairing unavailable"))? =
             Some(pairing_confirmation::Attempt::new(
                 until,
-                crate::protocol::wire::unix_ms()? + u64::try_from(ENROLLMENT_WINDOW.as_millis())?,
+                wire::unix_ms()? + u64::try_from(ENROLLMENT_WINDOW.as_millis())?,
             ));
         Ok(())
     }
@@ -251,22 +268,18 @@ impl Controller {
     }
     /// # Errors
     /// Rejects invalid metadata, unavailable state, cancellation or expiry.
-    pub fn authorize_once(
-        &self,
-        request: crate::protocol::AcquireRequest,
-        supply: bool,
-    ) -> eyre::Result<()> {
+    pub fn authorize_once(&self, request: AcquireRequest, supply: bool) -> eyre::Result<()> {
         self.authorize_mode(request, supply, false)
     }
     /// # Errors
     /// Rejects non-fixture metadata or unavailable paired state.
-    pub fn authorize_fixture(&self, request: crate::protocol::AcquireRequest) -> eyre::Result<()> {
+    pub fn authorize_fixture(&self, request: AcquireRequest) -> eyre::Result<()> {
         super::synthetic_credential_fixture::validate(&request)?;
         self.authorize_mode(request, true, true)
     }
     fn authorize_mode(
         &self,
-        request: crate::protocol::AcquireRequest,
+        request: AcquireRequest,
         supply: bool,
         synthetic_fixture: bool,
     ) -> eyre::Result<()> {
@@ -303,13 +316,13 @@ impl Controller {
     /// Rejects invalid metadata, unavailable state, cancellation or expiry.
     pub fn claim_permission(
         self: &Arc<Self>,
-        request: &crate::protocol::AcquireRequest,
+        request: &AcquireRequest,
     ) -> eyre::Result<Option<Arc<super::credential_grant::CredentialGrant>>> {
         self.claim_mode(request, false)
     }
     pub(crate) fn claim_fixture_permission(
         self: &Arc<Self>,
-        request: &crate::protocol::AcquireRequest,
+        request: &AcquireRequest,
     ) -> eyre::Result<Arc<super::credential_grant::CredentialGrant>> {
         super::synthetic_credential_fixture::validate(request)?;
         self.claim_mode(request, true)?
@@ -317,7 +330,7 @@ impl Controller {
     }
     fn claim_mode(
         self: &Arc<Self>,
-        request: &crate::protocol::AcquireRequest,
+        request: &AcquireRequest,
         fixture: bool,
     ) -> eyre::Result<Option<Arc<super::credential_grant::CredentialGrant>>> {
         let record = self
@@ -376,13 +389,12 @@ impl Controller {
         );
         action()
     }
-    fn snapshot(&self) -> Option<crate::protocol::SharedPreviewSnapshot> {
+    fn snapshot(&self) -> Option<SharedPreviewSnapshot> {
         self.credential_hub()
             .snapshot()
             .or_else(|| self.hub().snapshot())
     }
-    fn runtime_status(&self) -> crate::protocol::phone_status::PhoneRuntimeState {
-        use crate::protocol::phone_status::PhoneRuntimeState;
+    fn runtime_status(&self) -> PhoneRuntimeState {
         match self.runtime.load(Ordering::Acquire) {
             0 => PhoneRuntimeState::Stopped,
             1 => PhoneRuntimeState::Running,
@@ -398,16 +410,16 @@ impl Controller {
             );
         }
     }
-    pub(crate) fn credential_hub(&self) -> &crate::broker::shared_preview::SharedPreviewHub {
+    pub(crate) fn credential_hub(&self) -> &SharedPreviewHub {
         match &self.credential_hub {
             PreviewHub::Resident => super::credential_approvals::hub(),
             #[cfg(test)]
             PreviewHub::Isolated(hub) => hub,
         }
     }
-    fn hub(&self) -> &crate::broker::shared_preview::SharedPreviewHub {
+    fn hub(&self) -> &SharedPreviewHub {
         match &self.hub {
-            PreviewHub::Resident => crate::broker::shared_preview::SharedPreviewHub::resident(),
+            PreviewHub::Resident => SharedPreviewHub::resident(),
             #[cfg(test)]
             PreviewHub::Isolated(hub) => hub,
         }
@@ -417,7 +429,7 @@ impl Controller {
         generation: &str,
         certificate: &[u8],
         id: &str,
-        decision: crate::protocol::ApprovalPreviewDisposition,
+        decision: ApprovalPreviewDisposition,
     ) -> eyre::Result<bool> {
         let record = self
             .record
@@ -428,7 +440,7 @@ impl Controller {
                 && r.phone_certificate.as_deref() == Some(certificate)),
             "phone revoked or replaced"
         );
-        if decision == crate::protocol::ApprovalPreviewDisposition::ApprovedTest
+        if decision == ApprovalPreviewDisposition::ApprovedTest
             && self
                 .credential_hub()
                 .snapshot()
@@ -504,7 +516,7 @@ impl Controller {
 pub async fn run(
     controller: Arc<Controller>,
     cancel: teamy_cancellation::CancellationToken,
-    engine: Arc<crate::broker::engine::Engine>,
+    engine: Arc<Engine>,
 ) -> eyre::Result<()> {
     eyre::ensure!(
         controller
@@ -532,7 +544,7 @@ pub async fn run(
             "No-vault phone actor failed; limited restart"
         );
         if attempt < 2 {
-            tokio::time::sleep(std::time::Duration::from_secs(3 << attempt)).await;
+            time::sleep(Duration::from_secs(3 << attempt)).await;
         }
     }
     controller.runtime.store(3, Ordering::Release);

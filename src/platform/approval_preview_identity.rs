@@ -1,11 +1,14 @@
 use sha2::Digest;
+use std::env::current_exe;
+use std::fs::File;
+use std::io;
 use std::io::Read;
 pub(crate) fn executable() -> (String, Option<String>) {
-    let Ok(path) = std::env::current_exe() else {
+    let Ok(path) = current_exe() else {
         return ("unavailable".into(), None);
     };
-    let hash = (|| -> std::io::Result<String> {
-        let mut input = std::fs::File::open(&path)?;
+    let hash = (|| -> io::Result<String> {
+        let mut input = File::open(&path)?;
         let mut digest = sha2::Sha256::new();
         let mut buffer = [0_u8; 8192];
         loop {

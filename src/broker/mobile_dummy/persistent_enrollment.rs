@@ -1,6 +1,7 @@
 use super::paired_socket::PairedSocket;
 use super::paired_socket::read_frame;
 use super::paired_socket::write_frame;
+use tokio::time;
 impl PairedSocket {
     /// UKEY2-authenticated public certificate enrollment after explicit Match on both devices.
     /// # Errors
@@ -10,7 +11,7 @@ impl PairedSocket {
         desktop: &[u8],
         publish: impl FnOnce(&[u8]) -> eyre::Result<()>,
     ) -> eyre::Result<()> {
-        tokio::time::timeout_at(self.until, async {
+        time::timeout_at(self.until, async {
             let frame = read_frame(&mut self.socket).await?;
             let certificate = self.worker.call(7, &frame).await?;
             eyre::ensure!(

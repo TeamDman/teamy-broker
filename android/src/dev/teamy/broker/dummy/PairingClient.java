@@ -18,9 +18,8 @@ final class PairingClient implements AutoCloseable {
     private final PairingTiming timing=new PairingTiming();
     void foreground(boolean active){timing.foreground=active?PairingTiming.Foreground.FOREGROUND:PairingTiming.Foreground.BACKGROUND;}
     String safeTiming(){return timing.format(now(),reason);}
-    PairingClient(){this(false);}
-    PairingClient(boolean persistent){this(persistent,PhoneIdentity.TLS_ALIAS);}
-    PairingClient(boolean persistent,String alias){this.persistent=persistent;this.enrollmentAlias=alias;}
+    PairingClient(boolean persistent,String alias,PrivatePhoneConfig profile){this.persistent=persistent;this.enrollmentAlias=alias;this.profile=profile;}
+    private final PrivatePhoneConfig profile;
     private final String enrollmentAlias;
     private final EnrollmentPublication publication=new EnrollmentPublication();
     private final Socket socket = new Socket();
@@ -46,8 +45,7 @@ final class PairingClient implements AutoCloseable {
         ScheduledFuture<?> operation = limit(initial + 10000);
         byte[] binding = null, frame = null;
         try {
-            PrivatePhoneConfig.requireConfigured();
-            socket.connect(new InetSocketAddress(PrivatePhoneConfig.DESKTOP, PrivatePhoneConfig.PORT), 3000);
+            socket.connect(new InetSocketAddress(profile.desktop, PrivatePhoneConfig.PORT), 3000);
             socket.setSoTimeout(10000);
             binding = Frames.read(socket.getInputStream());
             JSONObject record = new JSONObject(new String(binding, StandardCharsets.UTF_8));
@@ -56,9 +54,9 @@ final class PairingClient implements AutoCloseable {
             timing.bindingBudget=budget.bindingPairMs;
             if (record.getInt("version") != 2 || !record.getString("desktop").equals(DummyPolicy.DESKTOP)
                 || !record.getString("phone").equals(DummyPolicy.PHONE)
-                || !record.getString("desktop_node").equals(PrivatePhoneConfig.DESKTOP_NODE)
-                || !record.getString("phone_node").equals(PrivatePhoneConfig.PHONE_NODE)
-                || !record.getString("endpoint").equals(PrivatePhoneConfig.DESKTOP+":"+PrivatePhoneConfig.PORT)
+                || !record.getString("desktop_node").equals(profile.desktopNode)
+                || !record.getString("phone_node").equals(profile.phoneNode)
+                || !record.getString("endpoint").equals(profile.desktop+":"+PrivatePhoneConfig.PORT)
                 || !record.getString("scope").equals(persistent?PhoneIdentity.SCOPE:"dummy-only/session-only/ukey2-p256")
                 || !record.getString("session_id").matches("[0-9a-f]{32}")
                 || !record.getString("nonce").matches("[0-9a-f]{64}"))

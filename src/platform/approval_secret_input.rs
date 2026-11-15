@@ -1,3 +1,5 @@
+use crate::protocol::MAX_SECRET;
+use std::ptr;
 use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::Foundation::RECT;
 use windows_sys::Win32::UI::WindowsAndMessaging::CreateWindowExW;
@@ -36,20 +38,20 @@ pub(crate) fn create(parent: HWND) -> Option<usize> {
             30,
             parent,
             103usize as _,
-            std::ptr::null_mut(),
-            std::ptr::null(),
+            ptr::null_mut(),
+            ptr::null(),
         )
     };
     if input.is_null() {
         return None;
     }
     // SAFETY: limits only our owned password edit control, no other application UI.
-    unsafe { SendMessageW(input, 0x00C5, crate::protocol::MAX_SECRET, 0) };
+    unsafe { SendMessageW(input, 0x00C5, MAX_SECRET, 0) };
     Some(input as usize)
 }
 pub(crate) fn read(handle: usize) -> Option<Zeroizing<Vec<u8>>> {
     let input = handle as HWND;
-    let mut chars = Zeroizing::new(vec![0u16; crate::protocol::MAX_SECRET + 1]);
+    let mut chars = Zeroizing::new(vec![0u16; MAX_SECRET + 1]);
     // SAFETY: bounded writable buffer reads only this dialog's user-operated input.
     let count =
         unsafe { GetWindowTextW(input, chars.as_mut_ptr(), i32::try_from(chars.len()).ok()?) };
@@ -59,7 +61,7 @@ pub(crate) fn read(handle: usize) -> Option<Zeroizing<Vec<u8>>> {
         return None;
     }
     let value = Zeroizing::new(String::from_utf16(&chars[..count]).ok()?);
-    if value.len() > crate::protocol::MAX_SECRET {
+    if value.len() > MAX_SECRET {
         return None;
     }
     Some(Zeroizing::new(value.as_bytes().to_vec()))

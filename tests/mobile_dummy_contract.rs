@@ -1,15 +1,30 @@
+use std::net::Ipv4Addr;
+use std::process;
+use std::str;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
+use std::time::Instant;
 use teamy_broker::broker::engine::Engine;
 use teamy_broker::broker::mobile_dummy::adapter::MobileDummyAdapter;
 use teamy_broker::broker::mobile_dummy::approval::MobileDummyApproval;
 use teamy_broker::broker::mobile_dummy::storage::DummyMemoryStorage;
 use teamy_broker::broker::mobile_dummy::{self};
+use teamy_broker::broker::server;
+use teamy_broker::protocol::VERSION;
+use teamy_broker::protocol::wire as protocol_wire;
+use teamy_broker::sdk::Client;
 use teamy_broker_handoff::binding::Binding;
 use teamy_broker_handoff::envelope::Envelope;
+use teamy_broker_handoff::pending::Pending;
 use teamy_broker_handoff::queue::Queue;
 use teamy_broker_handoff::session::Session;
+use teamy_broker_handoff::wire;
+use tokio::net::TcpListener;
+use tokio::net::TcpStream;
+use tokio::task;
+use tokio::time;
 fn setup() -> (Arc<Engine>, Arc<Queue>, Session) {
     let session = Session::random().unwrap();
     let phone = Session::from_bootstrap(&session.bootstrap()).unwrap();
@@ -24,20 +39,20 @@ fn setup() -> (Arc<Engine>, Arc<Queue>, Session) {
     (engine, queue, phone)
 }
 async fn pending(queue: &Queue, phone: &Session) -> Binding {
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+    time::timeout(Duration::from_secs(2), async {
         loop {
-            let challenge = teamy_broker_handoff::wire::random::<32>().unwrap();
+            let challenge = wire::random::<32>().unwrap();
             let poll = phone
                 .seal(teamy_broker_handoff::POLL_AAD, &challenge)
                 .unwrap();
             let envelope = queue.poll(&poll).unwrap();
             let plain = phone.open(&challenge, &envelope).unwrap();
-            let entries: Vec<teamy_broker_handoff::pending::Pending> =
-                facet_json::from_str(std::str::from_utf8(&plain).unwrap()).unwrap();
+            let entries: Vec<Pending> =
+                facet_json::from_str(str::from_utf8(&plain).unwrap()).unwrap();
             if let Some(entry) = entries.first() {
                 return facet_json::from_str(&entry.binding).unwrap();
             }
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            time::sleep(Duration::from_millis(5)).await;
         }
     })
     .await
@@ -75,7 +90,7 @@ async fn mobile_approval_finishes_waiting_consumer_with_fixed_memory_lease() {
     });
     let binding = pending(&queue, &phone).await;
     assert_eq!(binding.consumer_pid, 42);
-    let before = teamy_broker::protocol::wire::unix_ms().unwrap();
+    let before = protocol_wire::unix_ms().unwrap();
     submit(&queue, &phone, &binding, 1).unwrap();
     let grant = task.await.unwrap().unwrap();
     assert_eq!(grant.bytes.as_slice(), teamy_broker_handoff::DUMMY_SECRET);
@@ -83,7 +98,7 @@ async fn mobile_approval_finishes_waiting_consumer_with_fixed_memory_lease() {
     assert!(
         grant
             .deadline
-            .saturating_duration_since(std::time::Instant::now())
+            .saturating_duration_since(Instant::now())
             .as_secs()
             <= 900
     );
@@ -103,7 +118,7 @@ async fn mobile_approval_finishes_waiting_consumer_with_fixed_memory_lease() {
     drop(cached);
     engine.purge(Some(&grant.id)).await.unwrap();
     let _ = engine.validate_lease(&grant.id).await.unwrap_err();
-    assert_eq!(teamy_broker::protocol::VERSION, 2);
+    assert_eq!(VERSION, 2);
 }
 #[tokio::test]
 async fn deny_and_cancel_create_no_lease() {
@@ -135,7 +150,7 @@ async fn desktop_cancel_invalidates_pending_response() {
         tokio::spawn(async move { worker.acquire(mobile_dummy::request(), 42, token).await });
     let binding = pending(&queue, &phone).await;
     cancel.store(true, Ordering::SeqCst);
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), task)
+    let _ = time::timeout(Duration::from_secs(2), task)
         .await
         .unwrap()
         .unwrap()
@@ -172,7 +187,7 @@ async fn mobile_handoff_works_through_existing_sdk_and_isolated_named_pipe() {
     );
     let server_endpoint = endpoint.clone();
     let ipc = tokio::spawn(async move {
-        teamy_broker::broker::server::serve_at(
+        server::serve_at(
             engine,
             teamy_cancellation::CancellationToken::new(),
             &server_endpoint,
@@ -180,16 +195,13 @@ async fn mobile_handoff_works_through_existing_sdk_and_isolated_named_pipe() {
         )
         .await
     });
-    let client = teamy_broker::sdk::Client::new(None)
+    let client = Client::new(None)
         .unwrap()
         .with_endpoint(endpoint)
-        .with_deadlines(
-            std::time::Duration::from_secs(2),
-            std::time::Duration::from_secs(3),
-        );
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        .with_deadlines(Duration::from_secs(2), Duration::from_secs(3));
+    time::timeout(Duration::from_secs(3), async {
         while !client.status().await.unwrap().running {
-            tokio::task::yield_now().await;
+            task::yield_now().await;
         }
     })
     .await
@@ -197,7 +209,7 @@ async fn mobile_handoff_works_through_existing_sdk_and_isolated_named_pipe() {
     let consumer = client.clone();
     let waiting = tokio::spawn(async move { consumer.acquire(mobile_dummy::request()).await });
     let binding = pending(&queue, &phone).await;
-    assert_eq!(binding.consumer_pid, std::process::id());
+    assert_eq!(binding.consumer_pid, process::id());
     submit(&queue, &phone, &binding, 1).unwrap();
     let secret = waiting.await.unwrap().unwrap();
     assert!(
@@ -215,9 +227,7 @@ async fn mobile_handoff_works_through_existing_sdk_and_isolated_named_pipe() {
 #[tokio::test]
 async fn tcp_poll_and_submit_preserve_encrypted_protocol_framing() {
     let (engine, queue, phone) = setup();
-    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-        .await
-        .unwrap();
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
     let address = listener.local_addr().unwrap();
     let tcp_queue = Arc::clone(&queue);
     let tcp = tokio::spawn(mobile_dummy::server::serve(listener, tcp_queue));
@@ -231,20 +241,16 @@ async fn tcp_poll_and_submit_preserve_encrypted_protocol_framing() {
             .await
     });
     let binding = pending(&queue, &phone).await;
-    let challenge = teamy_broker_handoff::wire::random::<32>().unwrap();
+    let challenge = wire::random::<32>().unwrap();
     let packet = mobile_dummy::packet::Packet {
         operation: "poll".into(),
         envelope: phone
             .seal(teamy_broker_handoff::POLL_AAD, &challenge)
             .unwrap(),
     };
-    let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
-    teamy_broker::protocol::wire::write(&mut stream, &packet)
-        .await
-        .unwrap();
-    let reply: Envelope = teamy_broker::protocol::wire::read(&mut stream)
-        .await
-        .unwrap();
+    let mut stream = TcpStream::connect(address).await.unwrap();
+    protocol_wire::write(&mut stream, &packet).await.unwrap();
+    let reply: Envelope = protocol_wire::read(&mut stream).await.unwrap();
     phone.open(&challenge, &reply).unwrap();
     let exact = binding.encode().unwrap();
     let mut plain = vec![1];
@@ -259,13 +265,9 @@ async fn tcp_poll_and_submit_preserve_encrypted_protocol_framing() {
             .seal(teamy_broker_handoff::SUBMIT_AAD, &outer)
             .unwrap(),
     };
-    let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
-    teamy_broker::protocol::wire::write(&mut stream, &packet)
-        .await
-        .unwrap();
-    let reply: Envelope = teamy_broker::protocol::wire::read(&mut stream)
-        .await
-        .unwrap();
+    let mut stream = TcpStream::connect(address).await.unwrap();
+    protocol_wire::write(&mut stream, &packet).await.unwrap();
+    let reply: Envelope = protocol_wire::read(&mut stream).await.unwrap();
     assert_eq!(
         phone
             .open(inner.nonce.as_bytes(), &reply)

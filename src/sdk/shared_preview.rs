@@ -4,12 +4,14 @@ use crate::protocol::Request;
 use crate::protocol::Response;
 use crate::protocol::SharedPreviewState;
 use crate::protocol::{self};
+use std::time::Duration;
+use tokio::time::timeout;
 impl Client {
     /// No autostart. Snapshot reconciliation clears requests resolved elsewhere or before reconnect.
     /// # Errors
     /// Rejects an unavailable/legacy resident or malformed response.
     pub async fn shared_preview_state(&self) -> eyre::Result<SharedPreviewState> {
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        timeout(Duration::from_secs(5), async {
             let mut pipe = self
                 .connect(false, Some(protocol::SHARED_PREVIEW_CAPABILITY))
                 .await?;
@@ -41,7 +43,7 @@ impl Client {
         };
         let request = Request::control(operation, Some(id.into()));
         request.validate()?;
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        timeout(Duration::from_secs(5), async {
             let mut pipe = self
                 .connect(false, Some(protocol::SHARED_PREVIEW_CAPABILITY))
                 .await?;

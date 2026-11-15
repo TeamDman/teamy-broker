@@ -1,8 +1,12 @@
 use crate::cli::global_args::GlobalArgs;
 use crate::cli::log_format::LogFormat;
 use eyre::Context;
+use std::env;
+use std::fs;
 use std::fs::OpenOptions;
+use std::io;
 use std::io::IsTerminal;
+use std::path::Path;
 use std::sync::Mutex;
 use teamy_cancellation::CancellationToken;
 use tracing::Metadata;
@@ -10,6 +14,7 @@ use tracing_subscriber::EnvFilter;
 use tracing_subscriber::Registry;
 use tracing_subscriber::filter::FilterExt;
 use tracing_subscriber::filter::filter_fn;
+use tracing_subscriber::fmt as subscriber_fmt;
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::fmt::writer::BoxMakeWriter;
 use tracing_subscriber::prelude::*;
@@ -61,7 +66,7 @@ fn tracy_log_filter_directives() -> [&'static str; 7] {
 /// Returns invalid filters, file-open failures, or subscriber installation failures.
 /// All filters are validated before file effects. Existing files are appended.
 pub fn init_logging(args: &GlobalArgs, cancellation: CancellationToken) -> eyre::Result<()> {
-    build_subscriber(args, cancellation, BoxMakeWriter::new(std::io::stderr))?
+    build_subscriber(args, cancellation, BoxMakeWriter::new(io::stderr))?
         .try_init()
         .wrap_err("cannot install tracing subscriber")?;
     tracing::debug!("Tracing initialized");
@@ -73,24 +78,24 @@ fn build_subscriber(
     cancellation: CancellationToken,
     stderr: BoxMakeWriter,
 ) -> eyre::Result<impl tracing::Subscriber + Send + Sync + 'static> {
-    let inherited = std::env::var("RUST_LOG").ok();
+    let inherited = env::var("RUST_LOG").ok();
     let stderr_filter = parse_filter(stderr_filter_directive(args, inherited.as_deref()))
         .wrap_err("invalid stderr log filter")?;
     let file_filter = parse_filter(args.log_file_filter.as_deref().unwrap_or("debug"))
         .wrap_err("invalid file log filter")?;
     let stderr_layer = match args.log_format.unwrap_or_default() {
-        LogFormat::Text => tracing_subscriber::fmt::layer()
+        LogFormat::Text => subscriber_fmt::layer()
             .log_internal_errors(false)
             .pretty()
             .without_time()
             .with_target(true)
             .with_file(true)
             .with_line_number(true)
-            .with_ansi(std::io::stderr().is_terminal())
+            .with_ansi(io::stderr().is_terminal())
             .with_writer(stderr)
             .with_filter(stderr_filter.and(filter_fn(stderr_event)))
             .boxed(),
-        LogFormat::Ndjson => tracing_subscriber::fmt::layer()
+        LogFormat::Ndjson => subscriber_fmt::layer()
             .log_internal_errors(false)
             .json()
             .with_ansi(false)
@@ -105,13 +110,13 @@ fn build_subscriber(
         .with(stderr_layer)
         .with(args.stop_after.stop_after_span_layer(cancellation));
     let file_layer = if let Some(path) = args.log_file.as_deref() {
-        let path = std::path::Path::new(path);
+        let path = Path::new(path);
         eyre::ensure!(!path.is_dir(), "--log-file requires an explicit file path");
         if let Some(parent) = path
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
         {
-            std::fs::create_dir_all(parent).wrap_err("cannot create log parent directory")?;
+            fs::create_dir_all(parent).wrap_err("cannot create log parent directory")?;
         }
         let file = OpenOptions::new()
             .create(true)
@@ -121,7 +126,7 @@ fn build_subscriber(
         // The guard lives for the formatter's complete record, rather than just handle cloning.
         let writer = BoxMakeWriter::new(Mutex::new(file));
         let layer = match args.log_file_format.unwrap_or(LogFormat::Ndjson) {
-            LogFormat::Text => tracing_subscriber::fmt::layer()
+            LogFormat::Text => subscriber_fmt::layer()
                 .log_internal_errors(false)
                 .with_ansi(false)
                 .with_target(true)
@@ -131,7 +136,7 @@ fn build_subscriber(
                 .with_span_events(FmtSpan::CLOSE)
                 .with_filter(file_filter.and(filter_fn(exclude_tracy_frame_mark)))
                 .boxed(),
-            LogFormat::Ndjson => tracing_subscriber::fmt::layer()
+            LogFormat::Ndjson => subscriber_fmt::layer()
                 .log_internal_errors(false)
                 .json()
                 .with_ansi(false)
@@ -159,6 +164,11 @@ fn build_subscriber(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process;
+    use std::thread;
+    use std::time::SystemTime;
+    use std::time::UNIX_EPOCH;
+    use tracing::dispatcher;
     #[derive(Debug, facet::Facet)]
     struct Line {
         level: String,
@@ -182,11 +192,11 @@ mod tests {
 
     #[test]
     fn concurrent_file_records_remain_complete_and_independent() {
-        let path = std::env::temp_dir().join(format!(
+        let path = env::temp_dir().join(format!(
             "teamy-records-{}-{}.ndjson",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+            process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_nanos()
         ));
@@ -198,15 +208,15 @@ mod tests {
         let subscriber = build_subscriber(
             &args,
             CancellationToken::new(),
-            BoxMakeWriter::new(std::io::sink),
+            BoxMakeWriter::new(io::sink),
         )
         .unwrap();
         let dispatch = tracing::Dispatch::new(subscriber);
-        std::thread::scope(|scope| {
+        thread::scope(|scope| {
             for worker in 0..4 {
                 let dispatch = dispatch.clone();
                 scope.spawn(move || {
-                    tracing::dispatcher::with_default(&dispatch, || {
+                    dispatcher::with_default(&dispatch, || {
                         for sequence in 0..40 {
                             tracing::debug!(worker, sequence, "complete record");
                         }
@@ -215,12 +225,12 @@ mod tests {
             }
         });
 
-        let text = std::fs::read_to_string(&path).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
         assert_eq!(text.lines().count(), 160);
         for line in text.lines() {
             assert_eq!(facet_json::from_str::<Line>(line).unwrap().level, "DEBUG");
         }
         drop(dispatch);
-        std::fs::remove_file(path).unwrap();
+        fs::remove_file(path).unwrap();
     }
 }

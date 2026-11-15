@@ -1,6 +1,9 @@
 use super::*;
+use std::sync::Barrier;
+use std::thread;
+use std::time::Duration;
 fn ready() -> Arc<Attempt> {
-    let a = Attempt::new(Instant::now() + std::time::Duration::from_mins(1), 12345);
+    let a = Attempt::new(Instant::now() + Duration::from_mins(1), 12345);
     a.publish(Zeroizing::new("ABCD 1234 DCBA 5678".into()))
         .unwrap();
     a
@@ -52,7 +55,7 @@ fn confirm_once_wipes_and_dismisses() {
 fn expired_and_cancelled_are_not_confirmable() {
     let a = Attempt::new(
         Instant::now()
-            .checked_sub(std::time::Duration::from_millis(1))
+            .checked_sub(Duration::from_millis(1))
             .unwrap(),
         0,
     );
@@ -71,16 +74,16 @@ fn expired_and_cancelled_are_not_confirmable() {
 fn concurrent_native_cli_first_valid_wins() {
     for _ in 0..100 {
         let a = ready();
-        let gate = Arc::new(std::sync::Barrier::new(3));
+        let gate = Arc::new(Barrier::new(3));
         let aa = Arc::clone(&a);
         let g = Arc::clone(&gate);
-        let n = std::thread::spawn(move || {
+        let n = thread::spawn(move || {
             g.wait();
             aa.native(false)
         });
         let aa = Arc::clone(&a);
         let g = Arc::clone(&gate);
-        let c = std::thread::spawn(move || {
+        let c = thread::spawn(move || {
             g.wait();
             aa.confirm(&aa.id, "ABCD 1234 DCBA 5678").unwrap_or(false)
         });
@@ -102,7 +105,7 @@ fn revocation_cancels_even_claimed_comparison() {
 }
 #[test]
 fn unready_and_new_attempt_do_not_reuse_code() {
-    let a = Attempt::new(Instant::now() + std::time::Duration::from_mins(1), 12345);
+    let a = Attempt::new(Instant::now() + Duration::from_mins(1), 12345);
     let _ = a.inspect(&a.id).expect_err("expected rejection");
     let _ = a
         .confirm(&a.id, "anything")
@@ -126,7 +129,7 @@ fn published_expiry_wipes_and_blocks_native() {
 }
 #[test]
 fn cancel_before_comparison_ready() {
-    let a = Attempt::new(Instant::now() + std::time::Duration::from_mins(1), 12345);
+    let a = Attempt::new(Instant::now() + Duration::from_mins(1), 12345);
     a.cancel_pending(&a.id).unwrap();
     let _ = a
         .publish(Zeroizing::new("ABCD 1234 DCBA 5678".into()))
@@ -136,16 +139,16 @@ fn cancel_before_comparison_ready() {
 fn native_and_cli_approve_exactly_once() {
     for _ in 0..50 {
         let a = ready();
-        let gate = Arc::new(std::sync::Barrier::new(3));
+        let gate = Arc::new(Barrier::new(3));
         let aa = Arc::clone(&a);
         let g = Arc::clone(&gate);
-        let n = std::thread::spawn(move || {
+        let n = thread::spawn(move || {
             g.wait();
             aa.native(true)
         });
         let aa = Arc::clone(&a);
         let g = Arc::clone(&gate);
-        let c = std::thread::spawn(move || {
+        let c = thread::spawn(move || {
             g.wait();
             aa.confirm(&aa.id, "ABCD 1234 DCBA 5678").unwrap_or(false)
         });
@@ -158,16 +161,16 @@ fn native_and_cli_approve_exactly_once() {
 fn confirmation_racing_revocation_never_survives_revoke() {
     for _ in 0..50 {
         let a = ready();
-        let gate = Arc::new(std::sync::Barrier::new(3));
+        let gate = Arc::new(Barrier::new(3));
         let aa = Arc::clone(&a);
         let g = Arc::clone(&gate);
-        let n = std::thread::spawn(move || {
+        let n = thread::spawn(move || {
             g.wait();
             aa.cancel();
         });
         let aa = Arc::clone(&a);
         let g = Arc::clone(&gate);
-        let c = std::thread::spawn(move || {
+        let c = thread::spawn(move || {
             g.wait();
             let _ = aa.confirm(&aa.id, "ABCD 1234 DCBA 5678");
         });

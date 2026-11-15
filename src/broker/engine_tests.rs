@@ -1,4 +1,7 @@
 use super::*;
+use crate::broker::shared_preview::SharedPreviewHub;
+use crate::protocol::credential_context::CredentialContext;
+use tokio::task;
 #[path = "../../tests/support/mod.rs"]
 pub(crate) mod support;
 use crate::protocol::Backend;
@@ -29,7 +32,7 @@ async fn delayed_cleanup_cannot_keep_expired_secret_retrievable_and_retries_clea
         .await
         .get_mut(&grant.id)
         .unwrap()
-        .expires = crate::protocol::wire::unix_ms().unwrap();
+        .expires = wire::unix_ms().unwrap();
     let _ = engine.validate_lease(&grant.id).await.unwrap_err();
     assert_eq!(engine.status().await.unwrap().active_leases, 0);
     assert!(
@@ -65,16 +68,14 @@ async fn monotonic_expiry_rejects_when_wall_clock_deadline_is_still_future() {
         .await
         .get_mut(&grant.id)
         .unwrap()
-        .deadline = std::time::Instant::now()
-        .checked_sub(std::time::Duration::from_secs(1))
-        .unwrap();
+        .deadline = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
     let _ = engine.validate_lease(&grant.id).await.unwrap_err();
     assert_eq!(engine.status().await.unwrap().active_leases, 0);
 }
 #[tokio::test]
 async fn shutdown_during_adapter_read_prevents_publication() {
     let adapter = Arc::new(FakeAdapter {
-        delay: std::time::Duration::from_millis(100),
+        delay: Duration::from_millis(100),
         ..Default::default()
     });
     let storage = Arc::new(FakeStorage::default());
@@ -96,7 +97,7 @@ async fn shutdown_during_adapter_read_prevents_publication() {
         })
     };
     while adapter.calls.load(Ordering::SeqCst) == 0 {
-        tokio::task::yield_now().await;
+        task::yield_now().await;
     }
     engine.shutdown().await.unwrap();
     let _ = operation.await.unwrap().unwrap_err();
@@ -109,11 +110,11 @@ pub(crate) mod shared_approval;
 async fn phone_supply_enters_normal_memory_lease_without_provider_read() {
     let request = request(Backend::Memory);
     let cancel = Arc::new(AtomicBool::new(false));
-    let hub = crate::broker::shared_preview::SharedPreviewHub::default();
+    let hub = SharedPreviewHub::default();
     let shared = hub
         .begin_credential(
             Arc::clone(&cancel),
-            crate::protocol::credential_context::CredentialContext {
+            CredentialContext {
                 request: request.clone(),
                 supply: true,
                 connected_process_id: 1,
@@ -144,11 +145,11 @@ async fn phone_supply_enters_normal_memory_lease_without_provider_read() {
 async fn shared_denial_does_not_publish_or_read() {
     let request = request(Backend::Memory);
     let cancel = Arc::new(AtomicBool::new(false));
-    let hub = crate::broker::shared_preview::SharedPreviewHub::default();
+    let hub = SharedPreviewHub::default();
     let shared = hub
         .begin_credential(
             Arc::clone(&cancel),
-            crate::protocol::credential_context::CredentialContext {
+            CredentialContext {
                 request: request.clone(),
                 supply: true,
                 connected_process_id: 1,
@@ -157,7 +158,7 @@ async fn shared_denial_does_not_publish_or_read() {
             },
         )
         .unwrap();
-    shared.resolve(crate::protocol::ApprovalPreviewDisposition::DeniedTest);
+    shared.resolve(ApprovalPreviewDisposition::DeniedTest);
     let engine = Engine::new(
         Arc::new(FakeAdapter::default()),
         Arc::new(shared_approval::SharedApproval(shared)),

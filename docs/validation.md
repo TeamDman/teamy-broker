@@ -1,45 +1,37 @@
 # Validation scope
 
-All credential values and item references used by automated verification are synthetic. Default tests exercise injected approval/adapters/storage, actual isolated Windows named pipes, multiple clients, single-instance contention, multi-process autostart, denial, timeout cancellation, fixed 15-minute expiry, delayed cleanup, wall-clock rollback protection, purge races, graceful stop, protocol capability mismatch, provider conflicts and diagnostic redaction.
+Use synthetic values, isolated endpoints and temporary state for automated checks. Build/test success does not install or update a resident broker, arm enrollment, replace phone trust, or exercise a real vault. Current remediation commands, results and unresolved failures belong in [the active plan](repository-remediation-plan.md); this page describes what each form of evidence establishes.
 
-Separately reviewed ignored native tests exercise current-user DPAPI and Credential Manager with random synthetic targets, Task Scheduler registration verification, failed-publication rollback, foreign-file preservation and generation-safe replacement cleanup. Tasks and credentials are explicitly removed and checked. They do not invoke op or use actual vault data.
+## Host verification
 
-No automated test silently approves a real native dialog. Compiling native approval and the real op adapter does not verify interactive 1Password integration; this remains a human acceptance check using intentionally selected data. Build/test operations do not install a production daemon.
-The parent-approved final template delta was verified against both manifest hashes. The broker entrypoint matches the final shared boundary hash D0F039A90E70620D5F6E8935C00A6FAA7825AF38368E02390801DFF8E2AD534F; its new export was integrated while preserving broker-specific modules and dispatch.
+The reproducible offline command sequence and Java/SDK prerequisites are in [phone approvals](phone-approvals.md#dependencies-and-offline-checks). Build examples before running tests: provider cancellation launches `synthetic_op_wait`, and logging launches `synthetic_logging_cli`. Both fixtures own their processes and endpoints. Cargo's `--offline` prevents dependency downloads; it does not restrict a test's runtime network or credential access.
 
-## Verified V1 checkpoint
+| Boundary | Existing proof and limits |
+| --- | --- |
+| Broker and SDK | `broker_contract`, `ipc_contract`, `failure_contract`, `autostart_capture`, `shutdown_ipc` and `shutdown_status` exercise synthetic acquisition, fixed leases, incompatible peers, captured-output EOF, cleanup ownership and shutdown admission through isolated Windows pipes. They do not establish interactive 1Password behavior. |
+| Shared approval and credential supply | `approval_preview`, `shared_preview`, `provider_supply_cancellation` and broker unit tests exercise decision races, cancellation, publication checks, synthetic fixture isolation and owned provider-process termination. A winning decision alone must not bypass revocation or original expiry at cache publication. |
+| Phone transport and pairing | Phone unit/integration tests, `phone_control_deadlines`, mobile contract tests and `pairing/java/build.ps1 -Test` exercise authenticated frames, independent official-peer interoperability, stale/replayed requests, deadlines and lifecycle state. Loopback/JVM checks do not prove physical Android networking or hardware key behavior. |
+| Android policy | `android/check-java.ps1` runs host tests for input bounds, buffer ownership, fixture admission, durable selection, generation checks, deadlines and viewport policy. Pure geometry tests do not render an Android IME. The durable-selection fake does not inject a storage fault into an Android device. |
+| Build and output | Nightly formatting, strict workspace Clippy, lint fixtures, manifest/version checks and output/logging tests validate their named source or process contracts. None constitutes a security audit. |
 
-- Nightly rustfmt check: passed.
-- Workspace Clippy, all targets and all features with warnings denied: passed.
-- Workspace all-feature build and synthetic example builds: passed.
-- Default safe workspace tests with extended observability: 51 passed; 3 native tests intentionally ignored.
-- Separately reviewed isolated Windows native backend tests: 3 passed, including a fresh broker instance rejecting an earlier lease; exact synthetic credentials and task IDs were removed and checked.
-- Template lint-policy regression cases: 14 passed.
-- Foreground synthetic consumer: passed; only byte count printed.
-- Publication scan: passed seven token/private-data patterns, plus both package license declarations and complete MPL-2.0 text. A pattern scan does not detect every possible secret format.
+Tests marked `ignore` need individual review before execution. Native persistence checks can create synthetic Credential Manager entries and scheduled tasks; native UI checks can create private desktops or dialogs. Verify cleanup of only the objects the test owns. Do not infer permission to touch live state from an ignored test's presence.
 
-Interactive native approval and real 1Password desktop authorization remain untested acceptance paths. No production daemon was deployed.
-## Earlier protocol V2 repair checkpoint
+## Device and native UI acceptance
 
-At this earlier checkpoint the local consumer integration used the sibling SDK and no repair commit or push had been made; these results are historical.
+The following distinctions must remain visible when recording a result:
 
-- Nightly rustfmt check, strict all-target/all-feature workspace Clippy, example builds and all-feature workspace build: passed.
-- Safe workspace tests with extended observability: 60 passed; the 3 native persistence tests remained ignored during this repair.
-- Captured-output regression: the synthetic consumer reached process exit and output EOF while its independently running broker was still alive; the test then stopped and verified the broker.
-- Isolated named-pipe tests distinguish user denial, approval timeout and upstream read failure as typed, redacted errors. Invalid peer failure payloads cannot enter SDK error messages.
-- Protocol V1 and missing V2 capability peers fail compatibility before autostart.
-- Publication pattern and MPL-2.0 scan: passed. No repair publication was performed.
+- Native dialog visibility on a private desktop proves that shared presentation code can show the window under those startup conditions. It does not prove foreground attention or sound on the user's input desktop. Keep hidden-startup, cancellation and teardown checks in the native fixture.
+- A packaged APK manifest and signature describe that artifact. They do not prove which APK is installed or that the physical device uses a hardware-backed key. The public debug signer is unsuitable for real credentials.
+- Foreground-service presence, notification delivery, screen-off/Doze behavior, force-stop, reboot and reconnect are separate observations. A successful foreground preview does not establish sustained background reliability.
+- A masked native field and Autofill integration need Android UI checks. An `op://` reference, item navigation link, pasted value or Autofill result does not attest that a value came from the intended vault item.
+- Device acceptance must identify the tested source/artifact and workflow without putting private peer identities, account/item metadata, comparison codes or credentials in shared docs.
 
-The repair used injected approvals, fake credential adapters and isolated pipe endpoints only. It did not retry interactive credential acquisition or make a consumer API request. The corrected debug binaries were installed without deploying a persistent daemon.
+Historical October 2026 notes report a narrow physical-phone preview acceptance: phone approval closed the desktop dialog, desktop approval removed the transient phone notification while the app was backgrounded, and an idle desktop restart reconnected without pairing again. Separate notes report the focus-visibility repair and an isolated Android emulator check that exposed and corrected password masking. These are historical observations, not current-source validation. Extended sleep/Doze, screen-off, force-stop/reboot, physical-device credential supply and provider/item-origin behavior remain unqualified by those records. The cancelled manual bootstrap attempt was a usability rejection, not a diagnosed connection failure.
 
-## Source review on 2026-10-20
+## Evidence and provenance
 
-Independent reviews covered broker authorization/publication, phone pairing and revocation, transport, Android/Java, platform UI and the shared SDK/handoff protocol. The review fixed unbounded post-connect phone control/authorization exchanges by applying the configured request deadline capped at five seconds, with isolated stalled/partial-response regressions.
+Keep execution history in the active plan, with the exact command, source revision or relevant dirty delta, target, outcome and limits. Do not copy old test totals, installed PIDs, artifact hashes or former activation approvals forward as current state. Public documentation should contain reusable contracts and synthetic examples; raw device/install receipts belong in ignored local evidence.
 
-- Nightly formatting and strict offline all-target/all-feature workspace Clippy passed.
-- Offline all-feature workspace binaries/examples build and all 14 lint-policy fixtures passed.
-- Safe workspace tests with extended observability: 182 passed, 4 native/device tests left ignored. Three logging tests that read the default live broker endpoint were excluded for isolation.
-- Standalone thin SDK tests: 4 passed. Pinned Java pairing tests: 58 passed. Android host policy/lifecycle/input tests passed.
-- Source inventory secret-pattern scan found no token/private-key patterns. Intentional synthetic references, deployment paths and non-secret executable peer allowlists were reviewed separately; captured historical evidence and local device receipts were excluded from the commit.
+The earlier SDK installation record associates the accepted installer text with specific platform/build-tool packages. Raw repository XML, installed package records, decoded accepted text, the acceptance hash and the separately captured web agreement have different evidentiary roles. Preserve exact bytes and their manifest together; whitespace normalization is a comparison operation, not a reason to replace an accepted text or assert legal equivalence. Existing acceptance records do not accept a future license or install a new package.
 
-Tests used synthetic values, isolated pipes, temporary state and loopback peers. No real credentials, account connections, store/scheduler tests, live daemon changes, installation, restart or push occurred. APK packaging and physical-device acceptance were not performed. Interrupted final enrollment acknowledgments can leave one-sided trust and require explicit coordinated revoke/rearm; see [phone approvals](phone-approvals.md).
+Keep `pairing/java/vendor-lock.json`, `pairing/java/dependencies-lock.json` and the vendored UKEY2 `LICENSE`/`NOTICE` in source control. Reorganization of SDK receipts must not remove them. Retained hashes establish which inputs were inspected; they do not establish authorship, legal approval for every dependency or application security.

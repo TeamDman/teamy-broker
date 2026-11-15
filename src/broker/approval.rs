@@ -1,4 +1,6 @@
 use crate::protocol::AcquireRequest;
+use crate::protocol::ApprovalPreviewResult;
+use crate::protocol::FailureKind;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -8,10 +10,8 @@ pub trait Approval: Send + Sync {
         _pid: u32,
         _cancel: Arc<AtomicBool>,
         _work: super::work_guard::WorkGuard,
-    ) -> Pin<
-        Box<dyn Future<Output = eyre::Result<crate::protocol::ApprovalPreviewResult>> + Send + 'a>,
-    > {
-        Box::pin(async { Err(crate::protocol::FailureKind::ApprovalUnavailable.into()) })
+    ) -> Pin<Box<dyn Future<Output = eyre::Result<ApprovalPreviewResult>> + Send + 'a>> {
+        Box::pin(async { Err(FailureKind::ApprovalUnavailable.into()) })
     }
     fn decision<'a>(
         &'a self,
@@ -48,7 +48,7 @@ pub trait Approval: Send + Sync {
                 + 'a,
         >,
     > {
-        Box::pin(async { Err(crate::protocol::FailureKind::ApprovalUnavailable.into()) })
+        Box::pin(async { Err(FailureKind::ApprovalUnavailable.into()) })
     }
     fn approve<'a>(
         &'a self,

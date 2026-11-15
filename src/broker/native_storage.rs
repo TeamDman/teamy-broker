@@ -1,5 +1,6 @@
 use super::lease::Lease;
 use super::storage::Storage;
+use crate::protocol::Backend;
 #[derive(Debug)]
 pub struct NativeStorage;
 impl Storage for NativeStorage {
@@ -7,7 +8,7 @@ impl Storage for NativeStorage {
         super::persistence::publish(lease)
     }
     fn remove(&self, lease: &Lease) -> eyre::Result<()> {
-        if lease.request.backend == crate::protocol::Backend::Memory {
+        if lease.request.backend == Backend::Memory {
             Ok(())
         } else {
             super::persistence::cleanup(&lease.id, true)

@@ -1,7 +1,18 @@
+use super::approval_decision::ApprovalDecision as A;
 use super::shared_preview::SharedPreview;
 use super::shared_preview::SharedPreviewHub;
+use crate::platform::native_approval;
+use crate::protocol::AcquireRequest;
+use crate::protocol::ApprovalPreviewDisposition as D;
+use crate::protocol::FailureKind as F;
+use std::pin;
 use std::sync::Arc;
 use std::sync::OnceLock;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
+use tokio::task;
+use tokio::time;
 pub fn hub() -> &'static SharedPreviewHub {
     static HUB: OnceLock<SharedPreviewHub> = OnceLock::new();
     HUB.get_or_init(SharedPreviewHub::default)
@@ -9,16 +20,16 @@ pub fn hub() -> &'static SharedPreviewHub {
 /// # Errors
 /// Rejects invalid metadata, unavailable state, cancellation or expiry.
 pub fn approve(
-    request: crate::protocol::AcquireRequest,
+    request: AcquireRequest,
     pid: u32,
-    cancel: Arc<std::sync::atomic::AtomicBool>,
+    cancel: Arc<AtomicBool>,
     work: super::work_guard::WorkGuard,
     grant: &Arc<super::credential_grant::CredentialGrant>,
 ) -> eyre::Result<super::approval_decision::ApprovalDecision> {
     let shared = grant.begin(request.clone(), pid, Arc::clone(&cancel))?;
     let native = Arc::clone(&shared);
-    tokio::task::spawn_blocking(
-        move || match crate::platform::native_approval::credential_shared(
+    task::spawn_blocking(move || {
+        match native_approval::credential_shared(
             &request,
             pid,
             &cancel,
@@ -27,10 +38,10 @@ pub fn approve(
         ) {
             Ok(result) if result.task_dialog_hresult >= 0 => {}
             _ => {
-                native.resolve(crate::protocol::ApprovalPreviewDisposition::Unavailable);
+                native.resolve(D::Unavailable);
             }
-        },
-    );
+        }
+    });
     Ok(super::approval_decision::ApprovalDecision::Shared(shared))
 }
 /// # Errors
@@ -40,24 +51,22 @@ pub async fn resolve(
     provider: impl Future<Output = eyre::Result<zeroize::Zeroizing<Vec<u8>>>>,
 ) -> eyre::Result<zeroize::Zeroizing<Vec<u8>>> {
     let _guard = super::credential_resolution_guard::CredentialResolutionGuard(Arc::clone(&shared));
-    let mut provider = std::pin::pin!(provider);
+    let mut provider = pin::pin!(provider);
     let mut completed = false;
     loop {
         if shared.outcome().is_some() {
             return match decision(&shared)? {
                 super::approval_decision::ApprovalDecision::Supplied(bytes) => Ok(bytes),
-                super::approval_decision::ApprovalDecision::Denied => {
-                    Err(crate::protocol::FailureKind::UserDenied.into())
-                }
-                _ => Err(crate::protocol::FailureKind::ApprovalUnavailable.into()),
+                super::approval_decision::ApprovalDecision::Denied => Err(F::UserDenied.into()),
+                _ => Err(F::ApprovalUnavailable.into()),
             };
         }
         tokio::select! {
-            result=&mut provider,if !completed&&shared.provider_requested.load(std::sync::atomic::Ordering::Acquire)=>{
+            result=&mut provider,if !completed&&shared.provider_requested.load(Ordering::Acquire)=>{
                 completed=true;
-                match result{Ok(bytes) if !bytes.is_empty()=>{shared.provider_value(bytes);},_=>{shared.provider_failed.store(true,std::sync::atomic::Ordering::Release);}}
+                match result{Ok(bytes) if !bytes.is_empty()=>{shared.provider_value(bytes);},_=>{shared.provider_failed.store(true,Ordering::Release);}}
             },
-            ()=tokio::time::sleep(std::time::Duration::from_millis(20))=>{},
+            ()=time::sleep(Duration::from_millis(20))=>{},
         }
     }
 }
@@ -67,9 +76,6 @@ pub async fn resolve(
 pub fn decision(
     shared: &SharedPreview,
 ) -> eyre::Result<super::approval_decision::ApprovalDecision> {
-    use super::approval_decision::ApprovalDecision as A;
-    use crate::protocol::ApprovalPreviewDisposition as D;
-    use crate::protocol::FailureKind as F;
     match shared.outcome() {
         Some(D::ApprovedTest) => Ok(shared.take_supply().map_or(A::DesktopRead, A::Supplied)),
         Some(D::DeniedTest | D::Closed) => Ok(A::Denied),

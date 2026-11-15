@@ -10,7 +10,7 @@ import javax.net.ssl.SSLSocket;
 public final class TlsTest {
     public static void main(String[] args) throws Exception {
         boolean rejected = args.length > 2;
-        try (Socket socket = PinnedTls.socket(args[1])) {
+        try (Socket socket = PinnedTls.socket(args[1], "127.0.0.1")) {
             socket.connect(new InetSocketAddress("127.0.0.1", Integer.parseInt(args[0])), 3000);
             socket.setSoTimeout(3000); ((SSLSocket)socket).startHandshake();
             if (rejected) throw new AssertionError("Wrong pin accepted");

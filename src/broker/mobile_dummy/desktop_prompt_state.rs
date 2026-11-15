@@ -1,3 +1,4 @@
+use crate::broker::work_guard::WorkGuard;
 use std::sync::Arc;
 use teamy_broker_handoff::binding::Binding;
 use teamy_broker_handoff::queue::Queue;
@@ -6,5 +7,5 @@ use teamy_broker_handoff::queue::Queue;
 pub(super) struct DesktopPromptState {
     pub queue: Arc<Queue>,
     pub binding: Binding,
-    pub work: crate::broker::work_guard::WorkGuard,
+    pub work: WorkGuard,
 }

@@ -1,3 +1,26 @@
+use std::process;
+use teamy_broker::broker::app_request::AppRequest;
+use teamy_broker::broker::server;
+use teamy_broker::cli::Cli;
+use teamy_broker::platform::pipe_security;
+use teamy_broker::protocol::APPROVAL_PREVIEW_CAPABILITY;
+use teamy_broker::protocol::AcquireRequest;
+use teamy_broker::protocol::ApprovalPreviewEvent;
+use teamy_broker::protocol::ApprovalPreviewEventKind;
+use teamy_broker::protocol::ApprovalPreviewResult;
+use teamy_broker::protocol::Backend;
+use teamy_broker::protocol::CAPABILITIES;
+use teamy_broker::protocol::FailureKind;
+use teamy_broker::protocol::Hello;
+use teamy_broker::protocol::Request;
+use teamy_broker::protocol::Response;
+use teamy_broker::protocol::VERSION;
+use teamy_broker::protocol::wire;
+use tokio::io::AsyncReadExt;
+use tokio::net::windows::named_pipe::ClientOptions;
+use tokio::sync::Notify;
+use tokio::task;
+use tokio::time;
 #[path = "support/fake_adapter.rs"]
 mod fake_adapter;
 #[path = "support/fake_preview_approval.rs"]
@@ -17,8 +40,6 @@ use teamy_broker::sdk::Client;
 
 #[test]
 fn rich_preview_diagnostics_roundtrip_without_a_secret_or_lease_shape() {
-    use teamy_broker::protocol::ApprovalPreviewEvent;
-    use teamy_broker::protocol::ApprovalPreviewEventKind;
     let event = ApprovalPreviewEvent {
         kind: ApprovalPreviewEventKind::ButtonClicked,
         unix_ms: 1,
@@ -56,7 +77,6 @@ fn rich_preview_diagnostics_roundtrip_without_a_secret_or_lease_shape() {
 
 #[tokio::test]
 async fn approved_preview_sends_only_metadata_and_then_eof() {
-    use tokio::io::AsyncReadExt;
     let approval = Arc::new(FakePreviewApproval::new(
         ApprovalPreviewDisposition::ApprovedTest,
     ));
@@ -74,7 +94,7 @@ async fn approved_preview_sends_only_metadata_and_then_eof() {
     let server = tokio::spawn({
         let endpoint = endpoint.clone();
         async move {
-            teamy_broker::broker::server::serve_at(
+            server::serve_at(
                 engine,
                 teamy_cancellation::CancellationToken::new(),
                 &endpoint,
@@ -87,45 +107,35 @@ async fn approved_preview_sends_only_metadata_and_then_eof() {
         .unwrap()
         .with_endpoint(endpoint.clone())
         .with_deadlines(Duration::from_secs(2), Duration::from_secs(3));
-    tokio::time::timeout(Duration::from_secs(2), async {
+    time::timeout(Duration::from_secs(2), async {
         while !client.status().await.unwrap().running {
-            tokio::task::yield_now().await;
+            task::yield_now().await;
         }
     })
     .await
     .unwrap();
-    let mut pipe = tokio::net::windows::named_pipe::ClientOptions::new()
-        .open(&endpoint)
-        .unwrap();
-    let hello: teamy_broker::protocol::Hello =
-        teamy_broker::protocol::wire::read(&mut pipe).await.unwrap();
+    let mut pipe = ClientOptions::new().open(&endpoint).unwrap();
+    let hello: Hello = wire::read(&mut pipe).await.unwrap();
     assert!(
         hello
             .capabilities
             .iter()
-            .any(|cap| cap == teamy_broker::protocol::APPROVAL_PREVIEW_CAPABILITY)
+            .any(|cap| cap == APPROVAL_PREVIEW_CAPABILITY)
     );
-    teamy_broker::protocol::wire::write(&mut pipe, &hello)
+    wire::write(&mut pipe, &hello).await.unwrap();
+    wire::write(&mut pipe, &Request::control("approval-preview", None))
         .await
         .unwrap();
-    teamy_broker::protocol::wire::write(
-        &mut pipe,
-        &teamy_broker::protocol::Request::control("approval-preview", None),
-    )
-    .await
-    .unwrap();
-    let reply: teamy_broker::protocol::Response =
-        teamy_broker::protocol::wire::read(&mut pipe).await.unwrap();
+    let reply: Response = wire::read(&mut pipe).await.unwrap();
     assert_eq!(reply.code, "preview-complete");
     assert!(
         reply.lease_id.is_none()
             && reply.expires_unix_ms.is_none()
             && reply.remaining_millis.is_none()
     );
-    let result: teamy_broker::protocol::ApprovalPreviewResult =
-        teamy_broker::protocol::wire::read(&mut pipe).await.unwrap();
+    let result: ApprovalPreviewResult = wire::read(&mut pipe).await.unwrap();
     assert_eq!(result.disposition, ApprovalPreviewDisposition::ApprovedTest);
-    let _ = tokio::time::timeout(Duration::from_secs(2), pipe.read_u8())
+    let _ = time::timeout(Duration::from_secs(2), pipe.read_u8())
         .await
         .unwrap()
         .unwrap_err();
@@ -190,8 +200,8 @@ async fn cancelled_preview_never_starts_native_ui_or_any_provider() {
             .approval_preview(1, Arc::new(AtomicBool::new(true)))
             .await
             .unwrap_err()
-            .downcast_ref::<teamy_broker::protocol::FailureKind>(),
-        Some(&teamy_broker::protocol::FailureKind::RequestCancelled)
+            .downcast_ref::<FailureKind>(),
+        Some(&FailureKind::RequestCancelled)
     );
     assert_eq!(approval.calls.load(Ordering::SeqCst), 0);
     assert_eq!(adapter.calls.load(Ordering::SeqCst), 0);
@@ -200,7 +210,7 @@ async fn cancelled_preview_never_starts_native_ui_or_any_provider() {
 }
 #[tokio::test]
 async fn ipc_preview_tracks_dialog_rejects_duplicates_and_returns_no_secret_frame_or_lease() {
-    let release = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(Notify::new());
     let approval = Arc::new(FakePreviewApproval {
         release: Some(Arc::clone(&release)),
         ..FakePreviewApproval::new(ApprovalPreviewDisposition::ApprovedTest)
@@ -219,7 +229,7 @@ async fn ipc_preview_tracks_dialog_rejects_duplicates_and_returns_no_secret_fram
     let server = tokio::spawn({
         let endpoint = endpoint.clone();
         async move {
-            teamy_broker::broker::server::serve_at(
+            server::serve_at(
                 engine,
                 teamy_cancellation::CancellationToken::new(),
                 &endpoint,
@@ -232,9 +242,9 @@ async fn ipc_preview_tracks_dialog_rejects_duplicates_and_returns_no_secret_fram
         .unwrap()
         .with_endpoint(endpoint)
         .with_deadlines(Duration::from_secs(2), Duration::from_secs(3));
-    tokio::time::timeout(Duration::from_secs(2), async {
+    time::timeout(Duration::from_secs(2), async {
         while !client.status().await.unwrap().running {
-            tokio::task::yield_now().await;
+            task::yield_now().await;
         }
     })
     .await
@@ -243,9 +253,9 @@ async fn ipc_preview_tracks_dialog_rejects_duplicates_and_returns_no_secret_fram
         let client = client.clone();
         async move { client.approval_preview().await }
     });
-    tokio::time::timeout(Duration::from_secs(2), async {
+    time::timeout(Duration::from_secs(2), async {
         while approval.calls.load(Ordering::SeqCst) == 0 {
-            tokio::task::yield_now().await;
+            task::yield_now().await;
         }
     })
     .await
@@ -259,21 +269,21 @@ async fn ipc_preview_tracks_dialog_rejects_duplicates_and_returns_no_secret_fram
             .approval_preview()
             .await
             .unwrap_err()
-            .downcast_ref::<teamy_broker::protocol::FailureKind>(),
-        Some(&teamy_broker::protocol::FailureKind::ShutdownBlocked)
+            .downcast_ref::<FailureKind>(),
+        Some(&FailureKind::ShutdownBlocked)
     );
     assert_eq!(
         client
             .stop()
             .await
             .unwrap_err()
-            .downcast_ref::<teamy_broker::protocol::FailureKind>(),
-        Some(&teamy_broker::protocol::FailureKind::ShutdownBlocked)
+            .downcast_ref::<FailureKind>(),
+        Some(&FailureKind::ShutdownBlocked)
     );
     release.notify_one();
     let result = first.await.unwrap().unwrap();
     assert_eq!(result.disposition, ApprovalPreviewDisposition::ApprovedTest);
-    assert_eq!(result.connected_client_pid, std::process::id());
+    assert_eq!(result.connected_client_pid, process::id());
     assert_eq!(adapter.calls.load(Ordering::SeqCst), 0);
     assert!(storage.published.lock().unwrap().is_empty());
     assert_eq!(storage.removals.load(Ordering::SeqCst), 0);
@@ -285,7 +295,7 @@ async fn ipc_preview_tracks_dialog_rejects_duplicates_and_returns_no_secret_fram
 #[tokio::test]
 async fn client_disconnect_cancels_preview_and_releases_work_without_provider_calls() {
     let approval = Arc::new(FakePreviewApproval {
-        release: Some(Arc::new(tokio::sync::Notify::new())),
+        release: Some(Arc::new(Notify::new())),
         ..FakePreviewApproval::new(ApprovalPreviewDisposition::ApprovedTest)
     });
     let adapter = Arc::new(FakeAdapter::default());
@@ -302,7 +312,7 @@ async fn client_disconnect_cancels_preview_and_releases_work_without_provider_ca
     let server = tokio::spawn({
         let endpoint = endpoint.clone();
         async move {
-            teamy_broker::broker::server::serve_at(
+            server::serve_at(
                 engine,
                 teamy_cancellation::CancellationToken::new(),
                 &endpoint,
@@ -315,9 +325,9 @@ async fn client_disconnect_cancels_preview_and_releases_work_without_provider_ca
         .unwrap()
         .with_endpoint(endpoint)
         .with_deadlines(Duration::from_secs(2), Duration::from_secs(3));
-    tokio::time::timeout(Duration::from_secs(2), async {
+    time::timeout(Duration::from_secs(2), async {
         while !client.status().await.unwrap().running {
-            tokio::task::yield_now().await;
+            task::yield_now().await;
         }
     })
     .await
@@ -326,18 +336,18 @@ async fn client_disconnect_cancels_preview_and_releases_work_without_provider_ca
         let client = client.clone();
         async move { client.approval_preview().await }
     });
-    tokio::time::timeout(Duration::from_secs(2), async {
+    time::timeout(Duration::from_secs(2), async {
         while approval.calls.load(Ordering::SeqCst) == 0 {
-            tokio::task::yield_now().await;
+            task::yield_now().await;
         }
     })
     .await
     .unwrap();
     task.abort();
     assert!(task.await.unwrap_err().is_cancelled());
-    tokio::time::timeout(Duration::from_secs(2), async {
+    time::timeout(Duration::from_secs(2), async {
         while !client.status().await.unwrap().safe_to_stop {
-            tokio::task::yield_now().await;
+            task::yield_now().await;
         }
     })
     .await
@@ -364,25 +374,20 @@ async fn legacy_broker_is_rejected_before_any_preview_request_or_autostart() {
         r"\\.\pipe\teamy-broker-test-preview-{}",
         uuid::Uuid::new_v4()
     );
-    let mut pipe = teamy_broker::platform::pipe_security::create(&endpoint, true).unwrap();
+    let mut pipe = pipe_security::create(&endpoint, true).unwrap();
     let server = tokio::spawn(async move {
         pipe.connect().await.unwrap();
-        teamy_broker::protocol::wire::write(
+        wire::write(
             &mut pipe,
-            &teamy_broker::protocol::Hello {
+            &Hello {
                 version: 2,
-                capabilities: teamy_broker::protocol::CAPABILITIES
-                    .iter()
-                    .map(|cap| (*cap).into())
-                    .collect(),
+                capabilities: CAPABILITIES.iter().map(|cap| (*cap).into()).collect(),
                 instance_id: String::new(),
             },
         )
         .await
         .unwrap();
-        let _ = teamy_broker::protocol::wire::read::<teamy_broker::protocol::Hello, _>(&mut pipe)
-            .await
-            .unwrap_err();
+        let _ = wire::read::<Hello, _>(&mut pipe).await.unwrap_err();
     });
     let error = Client::new(None)
         .unwrap()
@@ -399,8 +404,7 @@ async fn legacy_broker_is_rejected_before_any_preview_request_or_autostart() {
 }
 #[test]
 fn preview_shape_cannot_supply_a_reference_or_lease_and_cli_requires_explicit_ui_flag() {
-    use teamy_broker::protocol::Request;
-    assert_eq!(teamy_broker::protocol::VERSION, 2);
+    assert_eq!(VERSION, 2);
     Request::control("approval-preview", None)
         .validate()
         .unwrap();
@@ -408,21 +412,21 @@ fn preview_shape_cannot_supply_a_reference_or_lease_and_cli_requires_explicit_ui
         .validate()
         .unwrap_err();
     let mut invalid = Request::control("approval-preview", None);
-    invalid.acquire = Some(teamy_broker::protocol::AcquireRequest {
+    invalid.acquire = Some(AcquireRequest {
         account: "dummy".into(),
         secret_ref: "op://Synthetic/not-used/field".into(),
         purpose: "not-used".into(),
         requesting_app: "not-used".into(),
         destination: "https://example.invalid".into(),
-        backend: teamy_broker::protocol::Backend::Memory,
+        backend: Backend::Memory,
     });
     let _ = invalid.validate().unwrap_err();
     for (args, expected) in [
         (vec!["preview"], false),
         (vec!["preview", "--show-test-dialog"], true),
     ] {
-        let cli: teamy_broker::cli::Cli = figue::Driver::new(
-            figue::builder::<teamy_broker::cli::Cli>()
+        let cli: Cli = figue::Driver::new(
+            figue::builder::<Cli>()
                 .unwrap()
                 .cli(|cli| cli.args(args).strict())
                 .build(),
@@ -432,7 +436,7 @@ fn preview_shape_cannot_supply_a_reference_or_lease_and_cli_requires_explicit_ui
         .unwrap()
         .value;
         assert!(
-            matches!(cli.command.into_request().unwrap(),teamy_broker::broker::app_request::AppRequest::Preview(show) if show==expected)
+            matches!(cli.command.into_request().unwrap(),AppRequest::Preview(show) if show==expected)
         );
     }
 }

@@ -1,4 +1,5 @@
 use facet::Facet;
+use std::fmt;
 use zeroize::Zeroize;
 #[derive(Facet)]
 pub struct PairingInspection {
@@ -7,8 +8,8 @@ pub struct PairingInspection {
     pub comparison: String,
     pub remaining_wrong_attempts: u8,
 }
-impl std::fmt::Debug for PairingInspection {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for PairingInspection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("PairingInspection([redacted])")
     }
 }
@@ -21,8 +22,8 @@ impl Drop for PairingInspection {
 pub struct PairingCode {
     pub comparison: String,
 }
-impl std::fmt::Debug for PairingCode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for PairingCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("PairingCode([redacted])")
     }
 }

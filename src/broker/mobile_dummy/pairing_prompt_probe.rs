@@ -1,8 +1,14 @@
 use super::pairing_prompt_diagnostics::PairingPromptDiagnostics;
 use super::pairing_prompt_probe_report::PairingPromptProbeReport;
 use super::pairing_prompt_state::PairingPromptState;
+use crate::broker::phone::pairing_confirmation::Attempt;
+use crate::platform::approval_preview_capture;
+use crate::protocol::ApprovalPreviewEventKind;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::thread;
+use std::time::Duration;
+use std::time::Instant;
 use windows_sys::Win32::System::StationsAndDesktops::CloseDesktop;
 use windows_sys::Win32::System::StationsAndDesktops::DESKTOP_READOBJECTS;
 use windows_sys::Win32::System::StationsAndDesktops::GetThreadDesktop;
@@ -46,10 +52,10 @@ fn run_inner(
     let thread = unsafe { GetCurrentThreadId() };
     // SAFETY: borrowed own-thread desktop handle, never closed here.
     let desktop = unsafe { GetThreadDesktop(thread) };
-    let name = crate::platform::approval_preview_capture::object_name(desktop);
+    let name = approval_preview_capture::object_name(desktop);
     // SAFETY: owned read-only input-desktop metadata handle, closed below.
     let input = unsafe { OpenInputDesktop(0, 0, DESKTOP_READOBJECTS) };
-    let input_name = crate::platform::approval_preview_capture::object_name(input);
+    let input_name = approval_preview_capture::object_name(input);
     if !input.is_null() {
         // SAFETY: closes only this function's owned metadata handle.
         unsafe { CloseDesktop(input) };
@@ -58,12 +64,7 @@ fn run_inner(
         name == expected_desktop && input_name != "unavailable" && name != input_name,
         "private non-input desktop required"
     );
-    let attempt = confirmation.map(|_| {
-        crate::broker::phone::pairing_confirmation::Attempt::new(
-            std::time::Instant::now() + std::time::Duration::from_secs(2),
-            0,
-        )
-    });
+    let attempt = confirmation.map(|_| Attempt::new(Instant::now() + Duration::from_secs(2), 0));
     if let Some(a) = &attempt {
         a.publish(zeroize::Zeroizing::new(
             "SYNTHETIC PRIVATE-DESKTOP PROBE; NO LIVE COMPARISON CODE".into(),
@@ -74,22 +75,22 @@ fn run_inner(
         code: zeroize::Zeroizing::new(
             "SYNTHETIC PRIVATE-DESKTOP PROBE; NO LIVE COMPARISON CODE".into(),
         ),
-        until: std::time::Instant::now() + std::time::Duration::from_secs(2),
+        until: Instant::now() + Duration::from_secs(2),
         closed: Arc::new(AtomicBool::new(false)),
     };
     let diagnostics = PairingPromptDiagnostics::default();
-    let accepted = std::thread::scope(|scope| {
+    let accepted = thread::scope(|scope| {
         if let (Some(accept), Some(attempt)) = (confirmation, attempt.as_ref()) {
             let diagnostics = &diagnostics;
             scope.spawn(move || {
-                let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
-                while std::time::Instant::now() < until {
+                let until = Instant::now() + Duration::from_secs(2);
+                while Instant::now() < until {
                     if diagnostics
                         .events
                         .lock()
                         .expect("synthetic events")
                         .iter()
-                        .any(|e| e.kind == crate::protocol::ApprovalPreviewEventKind::Created)
+                        .any(|e| e.kind == ApprovalPreviewEventKind::Created)
                     {
                         if accept {
                             let _ = attempt.confirm(
@@ -101,7 +102,7 @@ fn run_inner(
                         }
                         break;
                     }
-                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    thread::sleep(Duration::from_millis(10));
                 }
             });
         }

@@ -1,5 +1,12 @@
 use crate::protocol::ApprovalPreviewDisposition;
+use crate::protocol::FailureKind;
+use crate::protocol::MAX_SECRET;
 use crate::protocol::SharedPreviewSnapshot;
+use crate::protocol::credential_context::CredentialContext;
+use crate::protocol::wire;
+use std::fmt::Debug;
+use std::fmt::Formatter;
+use std::fmt::Result as FmtResult;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
@@ -40,7 +47,7 @@ impl SharedPreviewHub {
     pub fn begin_credential(
         &self,
         cancel: Arc<AtomicBool>,
-        context: crate::protocol::credential_context::CredentialContext,
+        context: CredentialContext,
     ) -> eyre::Result<Arc<SharedPreview>> {
         context.request.validate()?;
         self.begin_context(cancel, Some(context), None)
@@ -48,7 +55,7 @@ impl SharedPreviewHub {
     pub(crate) fn begin_bound(
         &self,
         cancel: Arc<AtomicBool>,
-        context: crate::protocol::credential_context::CredentialContext,
+        context: CredentialContext,
         authorization: Arc<super::credential_grant::CredentialGrant>,
     ) -> eyre::Result<Arc<SharedPreview>> {
         self.begin_context(cancel, Some(context), Some(authorization))
@@ -56,7 +63,7 @@ impl SharedPreviewHub {
     fn begin_context(
         &self,
         cancel: Arc<AtomicBool>,
-        credential: Option<crate::protocol::credential_context::CredentialContext>,
+        credential: Option<CredentialContext>,
         authorization: Option<Arc<super::credential_grant::CredentialGrant>>,
     ) -> eyre::Result<Arc<SharedPreview>> {
         let mut current = self.current.lock().expect("preview hub lock");
@@ -76,7 +83,7 @@ impl SharedPreviewHub {
                 .into(),
                 credential: credential.map(Box::new),
                 request_id: uuid::Uuid::new_v4().to_string(),
-                expires_unix_ms: crate::protocol::wire::unix_ms()?
+                expires_unix_ms: wire::unix_ms()?
                     .checked_add(60_000)
                     .ok_or_else(|| eyre::eyre!("invalid clock"))?,
             },
@@ -159,8 +166,8 @@ impl SharedPreviewHub {
         Ok(())
     }
 }
-impl std::fmt::Debug for SharedPreview {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Debug for SharedPreview {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         f.write_str("SharedApproval([redacted])")
     }
 }
@@ -169,8 +176,7 @@ impl SharedPreview {
         if self.cancel.load(Ordering::SeqCst) {
             Some(ApprovalPreviewDisposition::Cancelled)
         } else if Instant::now() >= *self.deadline.lock().expect("deadline lock")
-            || crate::protocol::wire::unix_ms()
-                .is_ok_and(|now| now >= self.snapshot.expires_unix_ms)
+            || wire::unix_ms().is_ok_and(|now| now >= self.snapshot.expires_unix_ms)
         {
             Some(ApprovalPreviewDisposition::TimedOut)
         } else {
@@ -244,7 +250,7 @@ impl SharedPreview {
         }
         if outcome.is_some()
             || bytes.is_empty()
-            || bytes.len() > crate::protocol::MAX_SECRET
+            || bytes.len() > MAX_SECRET
             || !self
                 .snapshot
                 .credential
@@ -253,7 +259,7 @@ impl SharedPreview {
         {
             return false;
         }
-        let Ok(now) = crate::protocol::wire::unix_ms() else {
+        let Ok(now) = wire::unix_ms() else {
             return false;
         };
         *self.resolved_at.lock().expect("resolution lock") = Some((now, Instant::now()));
@@ -283,16 +289,16 @@ impl SharedPreview {
     pub(crate) fn publication_valid(&self) -> eyre::Result<()> {
         eyre::ensure!(
             !self.cancel.load(Ordering::SeqCst),
-            crate::protocol::FailureKind::RequestCancelled
+            FailureKind::RequestCancelled
         );
         eyre::ensure!(
             Instant::now() < *self.deadline.lock().expect("deadline lock")
-                && crate::protocol::wire::unix_ms()? < self.snapshot.expires_unix_ms,
-            crate::protocol::FailureKind::ApprovalTimedOut
+                && wire::unix_ms()? < self.snapshot.expires_unix_ms,
+            FailureKind::ApprovalTimedOut
         );
         eyre::ensure!(
             self.outcome() == Some(ApprovalPreviewDisposition::ApprovedTest),
-            crate::protocol::FailureKind::ApprovalUnavailable
+            FailureKind::ApprovalUnavailable
         );
         Ok(())
     }
@@ -349,6 +355,8 @@ impl SharedPreview {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Barrier;
+    use std::thread;
     #[test]
     fn winner_cannot_publish_after_original_wall_deadline() {
         let hub = SharedPreviewHub::default();
@@ -373,7 +381,7 @@ mod tests {
         let hub = Arc::new(SharedPreviewHub::default());
         let request = hub.begin(Arc::new(AtomicBool::new(false))).unwrap();
         let id = hub.snapshot().unwrap().request_id;
-        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let barrier = Arc::new(Barrier::new(3));
         let handles: Vec<_> = [
             ApprovalPreviewDisposition::ApprovedTest,
             ApprovalPreviewDisposition::DeniedTest,
@@ -383,7 +391,7 @@ mod tests {
             let hub = Arc::clone(&hub);
             let id = id.clone();
             let barrier = Arc::clone(&barrier);
-            std::thread::spawn(move || {
+            thread::spawn(move || {
                 barrier.wait();
                 hub.decide(&id, decision).is_ok()
             })

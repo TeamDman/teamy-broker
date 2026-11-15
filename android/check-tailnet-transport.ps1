@@ -6,8 +6,6 @@ $probe=Join-Path (Split-Path $PSScriptRoot) 'target/debug/examples/mobile_tls_pr
 if (!(Test-Path -LiteralPath $probe)) { throw 'Build mobile_tls_probe in a serialized slot first.' }
 $out=Join-Path $PSScriptRoot 'build/tls-check'; New-Item -ItemType Directory -Path $out -Force | Out-Null
 $sources=@('src/dev/teamy/broker/dummy/Crypto.java','src/dev/teamy/broker/dummy/DummyPolicy.java','src/dev/teamy/broker/dummy/PinnedTls.java','tests/TlsTest.java') | ForEach-Object {Join-Path $PSScriptRoot $_}
-. (Join-Path $PSScriptRoot 'phone-config.ps1')
-$sources += Write-PhoneConfig (Join-Path $out 'generated')
 & javac -encoding UTF-8 -d $out @sources
 if ($LASTEXITCODE) { throw 'TLS test source compilation failed.' }
 foreach ($wrong in @($false,$true)) {

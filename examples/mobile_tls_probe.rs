@@ -1,30 +1,37 @@
 //! Finite isolated loopback handshake probe for the exact Android/JVM TLS client helper.
+use std::io;
+use std::io::Write;
+use std::net::Ipv4Addr;
+use std::panic;
+use std::process;
 use std::time::Duration;
 use teamy_broker::broker::mobile_dummy::tls_identity::TlsIdentity;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
+use tokio::net::TcpListener;
+use tokio::runtime::Builder;
+use tokio::time;
 fn main() {
-    std::panic::set_hook(Box::new(|_| {}));
+    panic::set_hook(Box::new(|_| {}));
     if run().is_err() {
-        std::process::exit(1);
+        process::exit(1);
     }
 }
 fn run() -> eyre::Result<()> {
-    tokio::runtime::Builder::new_current_thread()
+    Builder::new_current_thread()
         .enable_all()
         .build()?
         .block_on(async {
             let identity = TlsIdentity::random()?;
-            let listener =
-                tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
+            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
             let public = format!(
                 "{} {}\n",
                 listener.local_addr()?.port(),
                 identity.fingerprint
             );
-            std::io::Write::write_all(&mut std::io::stdout().lock(), public.as_bytes())?;
-            std::io::Write::flush(&mut std::io::stdout().lock())?;
-            tokio::time::timeout(Duration::from_secs(5), async {
+            Write::write_all(&mut io::stdout().lock(), public.as_bytes())?;
+            Write::flush(&mut io::stdout().lock())?;
+            time::timeout(Duration::from_secs(5), async {
                 let (socket, peer) = listener.accept().await?;
                 eyre::ensure!(peer.ip().is_loopback(), "isolated probe required");
                 // A deliberately wrong-pinned client can reject TLS; no plaintext fallback.

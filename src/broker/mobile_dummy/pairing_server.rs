@@ -7,6 +7,14 @@ use super::preview_activation::PreviewActivation;
 use super::preview_phase::PreviewPhase;
 use super::preview_phase::PreviewTrace;
 use super::preview_phase::emit;
+use crate::broker::cancel_guard::CancelGuard;
+use crate::broker::phone::SCOPE;
+use crate::broker::phone::pairing_confirmation::Attempt;
+use crate::protocol::phone_status::PhoneFailureCategory;
+use crate::protocol::phone_status::PhonePhase;
+use crate::protocol::wire;
+#[cfg(test)]
+use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -15,21 +23,10 @@ use std::time::Duration;
 use teamy_broker_handoff::pairing_binding::PairingBinding;
 use teamy_broker_handoff::session::Session;
 use tokio::net::TcpListener;
-/// Legacy dummy-acquisition example gate. Production serve never registers a phone listener.
-pub const PAIRING_ACTIVATION_APPROVED: bool = false;
-/// # Errors
-/// Legacy one-attempt dummy scope still requires its separate static activation gate.
-pub async fn accept(
-    listener: TcpListener,
-    java: &Path,
-    artifacts: &Path,
-    binding: &PairingBinding,
-    session: &Session,
-    until: tokio::time::Instant,
-) -> eyre::Result<PairedSocket> {
-    eyre::ensure!(PAIRING_ACTIVATION_APPROVED, "pairing activation blocked");
-    accept_core(listener, java, artifacts, binding, session, until, None).await
-}
+use tokio::net::TcpStream;
+use tokio::task;
+use tokio::time;
+use tokio::time::Instant;
 /// Receipt-gated no-vault preview scope only; no persistent enrollment or production registration.
 /// # Errors
 /// Rejects an expired consumed receipt, wrong peer, protocol failure, rejection or deadline.
@@ -39,7 +36,7 @@ pub async fn accept_preview(
     artifacts: &Path,
     binding: &PairingBinding,
     session: &Session,
-    until: tokio::time::Instant,
+    until: Instant,
     activation: &PreviewActivation,
 ) -> eyre::Result<PairedSocket> {
     activation.require_live()?;
@@ -60,7 +57,7 @@ async fn accept_core(
     artifacts: &Path,
     binding: &PairingBinding,
     session: &Session,
-    until: tokio::time::Instant,
+    until: Instant,
     trace: Option<Arc<PreviewTrace>>,
 ) -> eyre::Result<PairedSocket> {
     eyre::ensure!(
@@ -69,11 +66,10 @@ async fn accept_core(
     );
     let remaining = binding
         .pairing_expires_unix_ms
-        .checked_sub(crate::protocol::wire::unix_ms()?)
+        .checked_sub(wire::unix_ms()?)
         .ok_or_else(|| eyre::eyre!("pairing expired"))?;
-    let pair_until =
-        until.min(tokio::time::Instant::now() + Duration::from_millis(remaining.min(90_000)));
-    let (socket, peer) = match tokio::time::timeout_at(pair_until, listener.accept()).await {
+    let pair_until = until.min(Instant::now() + Duration::from_millis(remaining.min(90_000)));
+    let (socket, peer) = match time::timeout_at(pair_until, listener.accept()).await {
         Ok(result) => result?,
         Err(_redacted_error) => {
             emit(trace.as_deref(), PreviewPhase::PairingDeadline);
@@ -86,7 +82,7 @@ async fn accept_core(
     emit(trace.as_deref(), PreviewPhase::PeerVerified);
     let mut worker = JavaPairingWorker::start(java, artifacts, binding, until).await?;
     let closed = Arc::new(AtomicBool::new(false));
-    let result = tokio::time::timeout_at(
+    let result = time::timeout_at(
         pair_until,
         handshake(
             socket,
@@ -117,22 +113,18 @@ async fn accept_core(
     })
 }
 async fn handshake(
-    mut socket: tokio::net::TcpStream,
+    mut socket: TcpStream,
     worker: &mut JavaPairingWorker,
     binding: &PairingBinding,
     session: &Session,
-    pair_until: tokio::time::Instant,
+    pair_until: Instant,
     closed: Arc<AtomicBool>,
-    options: (
-        Option<Arc<PreviewTrace>>,
-        bool,
-        Option<Arc<crate::broker::phone::pairing_confirmation::Attempt>>,
-    ),
-) -> eyre::Result<tokio::net::TcpStream> {
+    options: (Option<Arc<PreviewTrace>>, bool, Option<Arc<Attempt>>),
+) -> eyre::Result<TcpStream> {
     let (trace, persistent, confirmation) = options;
     let diagnostic = confirmation.as_ref().map(Arc::clone);
     if let Some(d) = &diagnostic {
-        d.stage(crate::protocol::phone_status::PhonePhase::PairingHandshake);
+        d.stage(PhonePhase::PairingHandshake);
     }
     let binding_bytes = binding.encode()?;
     write_frame(&mut socket, binding_bytes.as_bytes()).await?;
@@ -157,10 +149,10 @@ async fn handshake(
         closed: Arc::clone(&closed),
     };
     if let Some(d) = &diagnostic {
-        d.stage(crate::protocol::phone_status::PhonePhase::PairingComparison);
+        d.stage(PhonePhase::PairingComparison);
     }
     let prompt_trace = trace.clone();
-    let mut prompt = tokio::task::spawn_blocking(move || {
+    let mut prompt = task::spawn_blocking(move || {
         if persistent {
             super::pairing_prompt::show_persistent(&state)
         } else if let Some(trace) = prompt_trace {
@@ -178,7 +170,7 @@ async fn handshake(
             result=&mut prompt=>result.map_err(|_redacted_error|eyre::eyre!("pairing unavailable"))??,
             result=socket.peek(&mut peek)=>{
                 match result {Ok(0)=>{#[cfg(test)] if let Some(d)=&diagnostic{d.event("peek_eof");}
-    if let Some(d)=&diagnostic{d.failure(crate::protocol::phone_status::PhoneFailureCategory::ReadClosed);}eyre::bail!("pairing peer closed");},Err(ref error)=>{#[cfg(test)] if let Some(d)=&diagnostic{d.event("peek_error");}
+    if let Some(d)=&diagnostic{d.failure(PhoneFailureCategory::ReadClosed);}eyre::bail!("pairing peer closed");},Err(ref error)=>{#[cfg(test)] if let Some(d)=&diagnostic{d.event("peek_error");}
     if let Some(d)=&diagnostic{d.transport_failure(error);}eyre::bail!("pairing peer transport");},Ok(_)=>{#[cfg(test)] if let Some(d)=&diagnostic{d.event("peek_peer_data");}}}
 
                 prompt.await.map_err(|_redacted_error|eyre::eyre!("pairing unavailable"))??
@@ -186,26 +178,26 @@ async fn handshake(
         };
     if !agreed {
         if let Some(d) = &diagnostic {
-            d.failure(crate::protocol::phone_status::PhoneFailureCategory::PairingRejected);
+            d.failure(PhoneFailureCategory::PairingRejected);
         }
         emit(trace.as_deref(), PreviewPhase::PairingRejected);
         eyre::bail!("pairing rejected");
     }
     if let Some(d) = &diagnostic {
-        d.stage(crate::protocol::phone_status::PhonePhase::PairingLocalConfirmation);
+        d.stage(PhonePhase::PairingLocalConfirmation);
     }
     let confirmation = worker.call(4, &[]).await?;
     write_frame(&mut socket, &confirmation).await?;
     emit(trace.as_deref(), PreviewPhase::LocalConfirmationSent);
     if let Some(d) = &diagnostic {
-        d.stage(crate::protocol::phone_status::PhonePhase::PairingPeerConfirmation);
+        d.stage(PhonePhase::PairingPeerConfirmation);
     }
     let peer_confirmation = read_frame(&mut socket).await?;
     emit(trace.as_deref(), PreviewPhase::PeerConfirmationReceived);
     worker.call(5, &peer_confirmation).await?;
     emit(trace.as_deref(), PreviewPhase::PeerConfirmationVerified);
     if let Some(d) = &diagnostic {
-        d.stage(crate::protocol::phone_status::PhonePhase::PairingBootstrap);
+        d.stage(PhonePhase::PairingBootstrap);
     }
     let bootstrap = session.transport_key();
     let encrypted = worker.call(6, bootstrap.as_ref()).await?;
@@ -223,37 +215,35 @@ async fn handshake(
 /// # Errors
 /// Rejects wrong scope/peer, expired human comparison, protocol failure or rejection.
 pub(crate) async fn accept_persistent_socket(
-    socket: tokio::net::TcpStream,
-    peer: std::net::SocketAddr,
+    socket: TcpStream,
     java: &Path,
     artifacts: &Path,
     binding: &PairingBinding,
-    until: tokio::time::Instant,
-    confirmation: Arc<crate::broker::phone::pairing_confirmation::Attempt>,
+    until: Instant,
+    confirmation: Arc<Attempt>,
+    profile: &super::phone_profile::PhoneProfile,
 ) -> eyre::Result<PairedSocket> {
-    eyre::ensure!(
-        binding.scope == crate::broker::phone::SCOPE,
-        "pairing scope rejected"
-    );
-    super::tailnet_peer::TailnetPeer::verify_peer(peer).await?;
+    let peer = socket.peer_addr()?;
+    eyre::ensure!(binding.scope == SCOPE, "pairing scope rejected");
+    super::tailnet_peer::TailnetPeer::verify_peer_for(peer, profile).await?;
     let paired = persistent_core(socket, java, artifacts, binding, until, confirmation).await?;
-    super::tailnet_peer::TailnetPeer::verify_peer(peer).await?;
+    super::tailnet_peer::TailnetPeer::verify_peer_for(peer, profile).await?;
     Ok(paired)
 }
 async fn persistent_core(
-    socket: tokio::net::TcpStream,
+    socket: TcpStream,
     java: &Path,
     artifacts: &Path,
     binding: &PairingBinding,
-    until: tokio::time::Instant,
-    confirmation: Arc<crate::broker::phone::pairing_confirmation::Attempt>,
+    until: Instant,
+    confirmation: Arc<Attempt>,
 ) -> eyre::Result<PairedSocket> {
     let mut worker = JavaPairingWorker::start(java, artifacts, binding, until).await?;
     let closed = Arc::new(AtomicBool::new(false));
-    let _guard = crate::broker::cancel_guard::CancelGuard(Arc::clone(&closed));
+    let _guard = CancelGuard(Arc::clone(&closed));
     let session = Session::random()?;
     let deadline_diagnostic = Arc::clone(&confirmation);
-    let socket = tokio::time::timeout_at(
+    let socket = time::timeout_at(
         until,
         handshake(
             socket,
@@ -267,7 +257,7 @@ async fn persistent_core(
     )
     .await
     .map_err(|_redacted_deadline| {
-        deadline_diagnostic.failure(crate::protocol::phone_status::PhoneFailureCategory::Deadline);
+        deadline_diagnostic.failure(PhoneFailureCategory::Deadline);
         eyre::eyre!("pairing deadline")
     })??;
     Ok(PairedSocket {
@@ -279,18 +269,18 @@ async fn persistent_core(
 
 #[cfg(test)]
 pub(crate) async fn accept_test_loopback_socket(
-    socket: tokio::net::TcpStream,
-    peer: std::net::SocketAddr,
+    socket: TcpStream,
+    peer: SocketAddr,
     java: &Path,
     artifacts: &Path,
     binding: &PairingBinding,
-    until: tokio::time::Instant,
-    confirmation: Arc<crate::broker::phone::pairing_confirmation::Attempt>,
+    until: Instant,
+    confirmation: Arc<Attempt>,
 ) -> eyre::Result<PairedSocket> {
     eyre::ensure!(
         peer.ip().is_loopback()
             && socket.local_addr()?.ip().is_loopback()
-            && binding.scope == crate::broker::phone::SCOPE,
+            && binding.scope == SCOPE,
         "test loopback scope rejected"
     );
     persistent_core(socket, java, artifacts, binding, until, confirmation).await

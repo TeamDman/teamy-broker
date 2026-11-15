@@ -1,3 +1,10 @@
+use std::time::Duration;
+use teamy_broker::platform::pipe_security;
+use teamy_broker::protocol::Request;
+use teamy_broker::protocol::wire;
+use tokio::io::AsyncWriteExt;
+use tokio::task;
+use tokio::time;
 mod support;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -42,7 +49,7 @@ async fn user_denial_timeout_and_upstream_failure_are_distinct_typed_redacted_ip
         };
         let client = Client::new(None).unwrap().with_endpoint(endpoint);
         while !client.status().await.unwrap().running {
-            tokio::task::yield_now().await;
+            task::yield_now().await;
         }
         let error = client.acquire(request(Backend::Memory)).await.unwrap_err();
         assert_eq!(error.downcast_ref::<FailureKind>(), Some(&kind));
@@ -89,14 +96,14 @@ fn typed_error_roundtrip_and_version_and_capability_compatibility_fail_closed() 
 async fn v1_or_missing_typed_error_capability_rejects_before_autostart() {
     for old_version in [true, false] {
         let endpoint = format!(r"\\.\pipe\teamy-broker-test-{}", uuid::Uuid::new_v4());
-        let mut pipe = teamy_broker::platform::pipe_security::create(&endpoint, true).unwrap();
+        let mut pipe = pipe_security::create(&endpoint, true).unwrap();
         let peer = tokio::spawn(async move {
             pipe.connect().await.unwrap();
             let mut capabilities: Vec<String> = CAPABILITIES.iter().map(|v| (*v).into()).collect();
             if !old_version {
                 capabilities.retain(|v| v != "typed-acquisition-errors-v1");
             }
-            teamy_broker::protocol::wire::write(
+            wire::write(
                 &mut pipe,
                 &Hello {
                     version: if old_version { 1 } else { VERSION },
@@ -106,7 +113,7 @@ async fn v1_or_missing_typed_error_capability_rejects_before_autostart() {
             )
             .await
             .unwrap();
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            time::sleep(Duration::from_millis(100)).await;
         });
         let client = Client::new(Some("must-never-spawn-incompatible-replacement.exe".into()))
             .unwrap()
@@ -119,12 +126,11 @@ async fn v1_or_missing_typed_error_capability_rejects_before_autostart() {
 
 #[tokio::test]
 async fn invalid_peer_failure_payload_cannot_leak_into_sdk_errors() {
-    use tokio::io::AsyncWriteExt;
     let endpoint = format!(r"\\.\pipe\teamy-broker-test-{}", uuid::Uuid::new_v4());
-    let mut pipe = teamy_broker::platform::pipe_security::create(&endpoint, true).unwrap();
+    let mut pipe = pipe_security::create(&endpoint, true).unwrap();
     let peer = tokio::spawn(async move {
         pipe.connect().await.unwrap();
-        teamy_broker::protocol::wire::write(
+        wire::write(
             &mut pipe,
             &Hello {
                 version: VERSION,
@@ -134,9 +140,8 @@ async fn invalid_peer_failure_payload_cannot_leak_into_sdk_errors() {
         )
         .await
         .unwrap();
-        let _: Hello = teamy_broker::protocol::wire::read(&mut pipe).await.unwrap();
-        let _: teamy_broker::protocol::Request =
-            teamy_broker::protocol::wire::read(&mut pipe).await.unwrap();
+        let _: Hello = wire::read(&mut pipe).await.unwrap();
+        let _: Request = wire::read(&mut pipe).await.unwrap();
         let invalid=br#"{"code":"failed","failure":"SYNTHETIC_UPSTREAM_SECRET_SHOULD_NOT_LEAK","lease_id":null,"expires_unix_ms":null,"remaining_millis":null,"status":null}"#;
         pipe.write_all(&u32::try_from(invalid.len()).unwrap().to_be_bytes())
             .await

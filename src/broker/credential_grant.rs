@@ -2,6 +2,7 @@ use crate::protocol::AcquireRequest;
 use crate::protocol::credential_context::CredentialContext;
 use std::sync::Arc;
 use std::sync::Weak;
+use std::sync::atomic::AtomicBool;
 #[derive(Debug)]
 pub struct CredentialGrant {
     pub(crate) controller: Weak<super::phone::Controller>,
@@ -24,7 +25,7 @@ impl CredentialGrant {
         self: &Arc<Self>,
         request: AcquireRequest,
         pid: u32,
-        cancel: Arc<std::sync::atomic::AtomicBool>,
+        cancel: Arc<AtomicBool>,
     ) -> eyre::Result<Arc<super::shared_preview::SharedPreview>> {
         eyre::ensure!(request == self.request, "exact permission changed");
         self.with_valid(|| {

@@ -56,8 +56,6 @@ $runtimeNames = @('protobuf-java-3.25.9.jar','guava-33.7.2-android.jar','jsr305-
 $runtime = @($runtimeNames | ForEach-Object {Join-Path $pairingRoot ('deps/'+$_)})
 $classpath = (@($androidJar,$pairingJar)+$runtime) -join ';'
 $sources = @(Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot 'src') -Recurse -Filter '*.java' | Select-Object -ExpandProperty FullName)
-. (Join-Path $PSScriptRoot 'phone-config.ps1')
-$sources += Write-PhoneConfig (Join-Path $out 'generated')
 Run-Tool (Join-Path $JavaBin 'javac.exe') (@('-encoding','UTF-8','-source','8','-target','8','-classpath',$classpath,'-d',$classes) + $sources)
 $classJar = Join-Path $out 'classes.jar'
 Run-Tool (Join-Path $JavaBin 'jar.exe') @('--create','--file',$classJar,'-C',$classes,'.')

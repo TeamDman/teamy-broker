@@ -1,3 +1,9 @@
+use std::path::Path;
+use teamy_broker::platform::pipe_security;
+use teamy_broker::protocol::wire;
+use tokio::task;
+use tokio::task::JoinSet;
+use tokio::time;
 mod support;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -38,14 +44,14 @@ async fn real_windows_pipe_multiple_clients_purge_stop_and_single_instance() {
         .with_endpoint(endpoint.clone())
         .with_deadlines(Duration::from_secs(2), Duration::from_secs(3));
     while !client.status().await.unwrap().running {
-        tokio::task::yield_now().await;
+        task::yield_now().await;
     }
     assert!(
         serve_at(e, CancellationToken::new(), &endpoint, false)
             .await
             .is_err()
     );
-    let mut tasks = tokio::task::JoinSet::new();
+    let mut tasks = JoinSet::new();
     for _ in 0..8 {
         let client = client.clone();
         tasks.spawn(async move { client.acquire(request(Backend::Memory)).await.unwrap() });
@@ -70,10 +76,10 @@ async fn real_windows_pipe_multiple_clients_purge_stop_and_single_instance() {
 #[tokio::test]
 async fn incompatible_peer_does_not_autostart_and_stalled_peer_times_out() {
     let endpoint = test_endpoint();
-    let mut pipe = teamy_broker::platform::pipe_security::create(&endpoint, true).unwrap();
+    let mut pipe = pipe_security::create(&endpoint, true).unwrap();
     let peer = tokio::spawn(async move {
         pipe.connect().await.unwrap();
-        teamy_broker::protocol::wire::write(
+        wire::write(
             &mut pipe,
             &Hello {
                 version: VERSION + 1,
@@ -83,7 +89,7 @@ async fn incompatible_peer_does_not_autostart_and_stalled_peer_times_out() {
         )
         .await
         .unwrap();
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        time::sleep(Duration::from_millis(100)).await;
     });
     let client = Client::new(Some("this-must-never-be-started.exe".into()))
         .unwrap()
@@ -93,10 +99,10 @@ async fn incompatible_peer_does_not_autostart_and_stalled_peer_times_out() {
     assert!(error.to_string().contains("incompatible"));
     peer.await.unwrap();
     let endpoint = test_endpoint();
-    let pipe = teamy_broker::platform::pipe_security::create(&endpoint, true).unwrap();
+    let pipe = pipe_security::create(&endpoint, true).unwrap();
     let peer = tokio::spawn(async move {
         pipe.connect().await.unwrap();
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        time::sleep(Duration::from_millis(200)).await;
     });
     let client = Client::new(None)
         .unwrap()
@@ -129,10 +135,10 @@ async fn client_timeout_cancels_approval_and_prevents_adapter_read() {
         .with_endpoint(endpoint)
         .with_deadlines(Duration::from_secs(1), Duration::from_millis(50));
     while !client.status().await.unwrap().running {
-        tokio::task::yield_now().await;
+        task::yield_now().await;
     }
     let _ = client.acquire(request(Backend::Memory)).await.unwrap_err();
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    time::sleep(Duration::from_millis(200)).await;
     assert_eq!(adapter.calls.load(Ordering::SeqCst), 0);
     cancel.request_cancel("synthetic test complete");
     server.await.unwrap().unwrap();
@@ -141,7 +147,7 @@ async fn client_timeout_cancels_approval_and_prevents_adapter_read() {
 #[tokio::test]
 async fn sdk_autostart_race_has_one_ready_daemon_and_no_orphan_after_stop() {
     let endpoint = test_endpoint();
-    let executable = std::path::Path::new(env!("CARGO_BIN_EXE_teamy-broker"))
+    let executable = Path::new(env!("CARGO_BIN_EXE_teamy-broker"))
         .parent()
         .unwrap()
         .join("examples")
@@ -159,7 +165,7 @@ async fn sdk_autostart_race_has_one_ready_daemon_and_no_orphan_after_stop() {
             endpoint,
         ])
         .with_deadlines(Duration::from_secs(5), Duration::from_secs(10));
-    let mut tasks = tokio::task::JoinSet::new();
+    let mut tasks = JoinSet::new();
     for _ in 0..8 {
         let client = client.clone();
         tasks.spawn(async move { client.acquire(request(Backend::Memory)).await.unwrap() });
@@ -173,7 +179,7 @@ async fn sdk_autostart_race_has_one_ready_daemon_and_no_orphan_after_stop() {
         if !client.status().await.unwrap().running {
             return;
         }
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        time::sleep(Duration::from_millis(10)).await;
     }
     panic!("synthetic daemon did not stop");
 }

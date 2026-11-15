@@ -1,3 +1,5 @@
+use std::ptr;
+use std::slice::from_raw_parts;
 use windows_sys::Win32::Foundation::LocalFree;
 use windows_sys::Win32::Security::Cryptography::CRYPT_INTEGER_BLOB;
 use windows_sys::Win32::Security::Cryptography::CRYPTPROTECT_UI_FORBIDDEN;
@@ -15,10 +17,10 @@ pub(crate) fn protect(data: &[u8], decrypt: bool) -> eyre::Result<Zeroizing<Vec<
         unsafe {
             CryptUnprotectData(
                 &raw const input,
-                std::ptr::null_mut(),
-                std::ptr::null(),
-                std::ptr::null(),
-                std::ptr::null(),
+                ptr::null_mut(),
+                ptr::null(),
+                ptr::null(),
+                ptr::null(),
                 CRYPTPROTECT_UI_FORBIDDEN,
                 &raw mut output,
             )
@@ -28,10 +30,10 @@ pub(crate) fn protect(data: &[u8], decrypt: bool) -> eyre::Result<Zeroizing<Vec<
         unsafe {
             CryptProtectData(
                 &raw const input,
-                std::ptr::null(),
-                std::ptr::null(),
-                std::ptr::null(),
-                std::ptr::null(),
+                ptr::null(),
+                ptr::null(),
+                ptr::null(),
+                ptr::null(),
                 CRYPTPROTECT_UI_FORBIDDEN,
                 &raw mut output,
             )
@@ -42,13 +44,11 @@ pub(crate) fn protect(data: &[u8], decrypt: bool) -> eyre::Result<Zeroizing<Vec<
         Zeroizing::new(Vec::new())
     } else {
         // SAFETY: nonempty successful DPAPI result is valid for its returned length.
-        Zeroizing::new(
-            unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize) }.to_vec(),
-        )
+        Zeroizing::new(unsafe { from_raw_parts(output.pbData, output.cbData as usize) }.to_vec())
     };
     if decrypt && output.cbData > 0 {
         // SAFETY: output is an owned writable buffer of the measured nonzero length.
-        unsafe { std::ptr::write_bytes(output.pbData, 0, output.cbData as usize) };
+        unsafe { ptr::write_bytes(output.pbData, 0, output.cbData as usize) };
     }
     // SAFETY: output was allocated by DPAPI; LocalFree accepts a null pointer for an empty result.
     unsafe { LocalFree(output.pbData.cast()) };

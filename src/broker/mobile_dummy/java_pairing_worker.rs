@@ -1,4 +1,12 @@
+use crate::broker::phone::ENROLLMENT_WINDOW;
+use crate::broker::phone::SCOPE;
+use crate::paths::AppHome;
+use std::env;
+use std::fmt::Debug;
+use std::fmt::Formatter;
+use std::fmt::Result as FmtResult;
 use std::path::Path;
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 use teamy_broker_handoff::pairing_binding::PairingBinding;
@@ -7,29 +15,27 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::Child;
 use tokio::process::ChildStdin;
 use tokio::process::ChildStdout;
+use tokio::process::Command;
+use tokio::time;
+use tokio::time::Instant;
 use zeroize::Zeroizing;
 /// Resolve the explicitly selected JDK without searching an untrusted executable path.
 /// # Errors
 /// Rejects a missing, relative, or unavailable JDK executable.
-pub fn configured_java() -> eyre::Result<std::path::PathBuf> {
-    let path = std::env::var_os("TEAMY_BROKER_JAVA")
-        .map(std::path::PathBuf::from)
-        .ok_or_else(|| eyre::eyre!("explicit Java executable required"))?;
-    eyre::ensure!(
-        path.is_absolute() && path.is_file(),
-        "explicit Java executable unavailable"
-    );
-    Ok(path)
+pub fn configured_java() -> eyre::Result<PathBuf> {
+    let path = super::phone_profile::PhoneProfile::load(&AppHome::resolve()?)?.java;
+    path.require_available()?;
+    Ok(path.into_path_buf())
 }
 /// Existing-JDK adapter around pinned official Java UKEY2. No subprocess output becomes a log.
 pub struct JavaPairingWorker {
     child: Child,
     input: ChildStdin,
     output: ChildStdout,
-    until: tokio::time::Instant,
+    until: Instant,
 }
-impl std::fmt::Debug for JavaPairingWorker {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Debug for JavaPairingWorker {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         f.write_str("JavaPairingWorker([redacted])")
     }
 }
@@ -40,7 +46,7 @@ impl JavaPairingWorker {
         java: &Path,
         artifacts: &Path,
         binding: &PairingBinding,
-        until: tokio::time::Instant,
+        until: Instant,
     ) -> eyre::Result<Self> {
         Self::start_role(java, artifacts, binding, until, false).await
     }
@@ -49,7 +55,7 @@ impl JavaPairingWorker {
         java: &Path,
         artifacts: &Path,
         binding: &PairingBinding,
-        until: tokio::time::Instant,
+        until: Instant,
     ) -> eyre::Result<Self> {
         Self::start_role(java, artifacts, binding, until, true).await
     }
@@ -57,7 +63,7 @@ impl JavaPairingWorker {
         java: &Path,
         artifacts: &Path,
         binding: &PairingBinding,
-        until: tokio::time::Instant,
+        until: Instant,
         phone: bool,
     ) -> eyre::Result<Self> {
         eyre::ensure!(
@@ -65,21 +71,21 @@ impl JavaPairingWorker {
             "pairing runtime unavailable"
         );
         eyre::ensure!(
-            until > tokio::time::Instant::now()
+            until > Instant::now()
                 && until
-                    <= tokio::time::Instant::now()
-                        + if binding.scope == crate::broker::phone::SCOPE {
-                            crate::broker::phone::ENROLLMENT_WINDOW
+                    <= Instant::now()
+                        + if binding.scope == SCOPE {
+                            ENROLLMENT_WINDOW
                         } else {
                             Duration::from_mins(3)
                         },
             "finite pairing session required"
         );
-        let classpath = std::env::join_paths([
+        let classpath = env::join_paths([
             artifacts.join("build/ukey2-worker.jar"),
             artifacts.join("deps/*"),
         ])?;
-        let mut command = tokio::process::Command::new(java);
+        let mut command = Command::new(java);
         command
             .args(["-Xmx64m", "-cp"])
             .arg(classpath)
@@ -88,7 +94,7 @@ impl JavaPairingWorker {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .kill_on_drop(true);
-        if binding.scope == crate::broker::phone::SCOPE {
+        if binding.scope == SCOPE {
             command.arg("--persistent-preview");
         }
         if phone {
@@ -128,9 +134,8 @@ impl JavaPairingWorker {
             operation <= 7 && payload.len() < 16_384,
             "pairing operation rejected"
         );
-        let result = tokio::time::timeout_at(
-            self.until
-                .min(tokio::time::Instant::now() + Duration::from_secs(5)),
+        let result = time::timeout_at(
+            self.until.min(Instant::now() + Duration::from_secs(5)),
             async {
                 let size = u32::try_from(payload.len() + 1)?;
                 self.input.write_u32(size).await?;

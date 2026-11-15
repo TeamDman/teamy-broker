@@ -13,10 +13,8 @@ import javax.net.ssl.X509TrustManager;
 
 /** Session-only exact certificate pin. No trust-all manager, persistent store, or production mode. */
 public final class PinnedTls {
-    public static final String DESKTOP = PrivatePhoneConfig.DESKTOP;
-    public static final int PORT = PrivatePhoneConfig.PORT;
     private PinnedTls() {}
-    public static Socket socket(String pinText) throws Exception {
+    public static Socket socket(String pinText, final String desktop) throws Exception {
         final byte[] pin = Crypto.unhex(pinText);
         if (pin.length != 32) { Arrays.fill(pin, (byte)0); throw new CertificateException("invalid pin"); }
         SSLContext context = SSLContext.getInstance("TLS");
@@ -31,7 +29,7 @@ public final class PinnedTls {
                     if (uses == null || !uses.contains("1.3.6.1.5.5.7.3.1")) throw new CertificateException("server use required");
                     boolean address = false;
                     if (chain[0].getSubjectAlternativeNames() != null) for (List<?> name : chain[0].getSubjectAlternativeNames()) {
-                        if (Integer.valueOf(7).equals(name.get(0)) && DESKTOP.equals(name.get(1))) address = true;
+                        if (Integer.valueOf(7).equals(name.get(0)) && desktop.equals(name.get(1))) address = true;
                     }
                     if (!address) throw new CertificateException("desktop address rejected");
                     byte[] hash = MessageDigest.getInstance("SHA-256").digest(chain[0].getEncoded());

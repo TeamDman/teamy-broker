@@ -1,4 +1,6 @@
 use facet::Facet;
+use std::error::Error;
+use std::fmt;
 /// Closed, safe failure taxonomy. Contains no item, destination, credential or upstream detail.
 #[derive(Facet, Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -33,9 +35,9 @@ impl FailureKind {
         }
     }
 }
-impl std::fmt::Display for FailureKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for FailureKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.message())
     }
 }
-impl std::error::Error for FailureKind {}
+impl Error for FailureKind {}

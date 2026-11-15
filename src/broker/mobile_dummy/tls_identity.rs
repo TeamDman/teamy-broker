@@ -3,19 +3,26 @@ use rcgen::DnType;
 use rcgen::ExtendedKeyUsagePurpose;
 use rcgen::KeyPair;
 use rcgen::KeyUsagePurpose;
+use rustls::crypto::ring;
 use rustls::pki_types::CertificateDer;
 use rustls::pki_types::PrivatePkcs8KeyDer;
+use rustls::server::NoServerSessionStorage;
 use sha2::Digest;
 use sha2::Sha256;
+use std::fmt::Debug;
+use std::fmt::Formatter;
+use std::fmt::Result as FmtResult;
+use std::net::Ipv4Addr;
 use std::sync::Arc;
+use teamy_broker_handoff::wire;
 /// A new synthetic TLS identity per foreground test, with no OS key container or disk export.
 pub struct TlsIdentity {
     pub acceptor: tokio_rustls::TlsAcceptor,
     pub certificate: CertificateDer<'static>,
     pub fingerprint: String,
 }
-impl std::fmt::Debug for TlsIdentity {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Debug for TlsIdentity {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         f.write_str("TlsIdentity([redacted])")
     }
 }
@@ -23,13 +30,15 @@ impl TlsIdentity {
     /// # Errors
     /// Returns a redacted error on synthetic key, certificate or TLS configuration failure.
     pub fn random() -> eyre::Result<Self> {
+        Self::for_address(Ipv4Addr::LOCALHOST)
+    }
+    /// # Errors
+    /// Returns a redacted error on synthetic key, certificate or TLS configuration failure.
+    pub fn for_address(address: Ipv4Addr) -> eyre::Result<Self> {
         let key = KeyPair::generate()
             .map_err(|_redacted_error| eyre::eyre!("dummy TLS key unavailable"))?;
-        let mut params = CertificateParams::new(vec![
-            teamy_broker_handoff::phone_config::DESKTOP.to_string(),
-            "127.0.0.1".into(),
-        ])
-        .map_err(|_redacted_error| eyre::eyre!("dummy TLS parameters unavailable"))?;
+        let mut params = CertificateParams::new(vec![address.to_string(), "127.0.0.1".into()])
+            .map_err(|_redacted_error| eyre::eyre!("dummy TLS parameters unavailable"))?;
         let now = time::OffsetDateTime::now_utc();
         params.not_before = now - time::Duration::minutes(1);
         params.not_after = now + time::Duration::minutes(6);
@@ -43,7 +52,7 @@ impl TlsIdentity {
             .map_err(|_redacted_error| eyre::eyre!("dummy TLS certificate unavailable"))?;
         let certificate = cert.der().clone();
         let private = PrivatePkcs8KeyDer::from(key.serialize_der());
-        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let provider = Arc::new(ring::default_provider());
         let mut config = rustls::ServerConfig::builder_with_provider(provider)
             .with_safe_default_protocol_versions()
             .map_err(|_redacted_error| eyre::eyre!("dummy TLS unavailable"))?
@@ -52,8 +61,8 @@ impl TlsIdentity {
             .map_err(|_redacted_error| eyre::eyre!("dummy TLS unavailable"))?;
         // Application authentication is the existing ephemeral AEAD session, not a tailnet IP alone.
         config.max_early_data_size = 0;
-        config.session_storage = Arc::new(rustls::server::NoServerSessionStorage {});
-        let fingerprint = teamy_broker_handoff::wire::hex(&Sha256::digest(certificate.as_ref()));
+        config.session_storage = Arc::new(NoServerSessionStorage {});
+        let fingerprint = wire::hex(&Sha256::digest(certificate.as_ref()));
         Ok(Self {
             acceptor: tokio_rustls::TlsAcceptor::from(Arc::new(config)),
             certificate,

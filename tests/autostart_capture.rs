@@ -1,8 +1,12 @@
+use std::path::Path;
+use std::process::Stdio;
 use std::time::Duration;
 use teamy_broker::sdk::Client;
+use tokio::process::Command;
+use tokio::time;
 #[tokio::test]
 async fn redirected_consumer_exits_with_eof_while_its_daemon_remains_alive() {
-    let examples = std::path::Path::new(env!("CARGO_BIN_EXE_teamy-broker"))
+    let examples = Path::new(env!("CARGO_BIN_EXE_teamy-broker"))
         .parent()
         .unwrap()
         .join("examples");
@@ -14,13 +18,13 @@ async fn redirected_consumer_exits_with_eof_while_its_daemon_remains_alive() {
         .unwrap()
         .with_endpoint(endpoint.clone())
         .with_deadlines(Duration::from_secs(2), Duration::from_secs(3));
-    let result = tokio::time::timeout(
+    let result = time::timeout(
         Duration::from_secs(5),
-        tokio::process::Command::new(helper)
+        Command::new(helper)
             .args([daemon.to_str().unwrap(), &endpoint])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .creation_flags(0x0800_0000)
             .kill_on_drop(true)
             .output(),

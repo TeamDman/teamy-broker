@@ -1,8 +1,10 @@
 use super::app_request::AppRequest;
 use crate::cli::output::CliOutput;
+use crate::protocol::FailureKind;
 use crate::sdk::Client;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::time;
 /// # Errors
 ///
 /// Returns an error on invalid configuration, expired leases, denial, or failed I/O.
@@ -10,13 +12,21 @@ pub async fn invoke(
     request: AppRequest,
     cancellation: teamy_cancellation::CancellationToken,
 ) -> eyre::Result<CliOutput> {
+    invoke_with_client(request, cancellation, None).await
+}
+
+pub(crate) async fn invoke_with_client(
+    request: AppRequest,
+    cancellation: teamy_cancellation::CancellationToken,
+    supplied_client: Option<Client>,
+) -> eyre::Result<CliOutput> {
     cancellation.bail_if_cancelled()?;
     match request {
         AppRequest::PairingConfirm { attempt_id, code } => {
-            let client = Client::new(None)?;
+            let client = supplied_client.map_or_else(|| Client::new(None), Ok)?;
             let result = tokio::select! {
                 result=client.pairing_confirm(&attempt_id,&code)=>result?,
-                ()=async{while !cancellation.is_cancelled(){tokio::time::sleep(Duration::from_millis(20)).await;}}=>return Err(crate::protocol::FailureKind::RequestCancelled.into()),
+                ()=async{while !cancellation.is_cancelled(){time::sleep(Duration::from_millis(20)).await;}}=>return Err(FailureKind::RequestCancelled.into()),
             };
             Ok(CliOutput::facet(result, None))
         }
@@ -24,11 +34,12 @@ pub async fn invoke(
             if !show {
                 return Ok(CliOutput::facet("PROPOSAL ONLY: preview --show-test-dialog opens one TEST/DUMMY window through the already-running resident broker. No vault, credential or lease; no autostart. Coordinate timing first.".to_string(),Some(Duration::from_secs(10))));
             }
-            let client =
-                Client::new(None)?.with_deadlines(Duration::from_secs(5), Duration::from_secs(70));
+            let client = supplied_client
+                .map_or_else(|| Client::new(None), Ok)?
+                .with_deadlines(Duration::from_secs(5), Duration::from_secs(70));
             let result = tokio::select! {
                 result=client.approval_preview()=>result?,
-                ()=async {while !cancellation.is_cancelled(){tokio::time::sleep(Duration::from_millis(50)).await;}}=>return Err(crate::protocol::FailureKind::RequestCancelled.into()),
+                ()=async {while !cancellation.is_cancelled(){time::sleep(Duration::from_millis(50)).await;}}=>return Err(FailureKind::RequestCancelled.into()),
             };
             Ok(CliOutput::facet(result, None))
         }
@@ -49,10 +60,9 @@ pub async fn invoke(
             Ok(CliOutput::none(Some(Duration::from_secs(10))))
         }
         AppRequest::Control(request) => {
-            let client = Client::new(None)?.with_deadlines(
-                std::time::Duration::from_secs(5),
-                std::time::Duration::from_secs(10),
-            );
+            let client = supplied_client
+                .map_or_else(|| Client::new(None), Ok)?
+                .with_deadlines(Duration::from_secs(5), Duration::from_secs(10));
             match request.operation.as_str() {
                 "phone-authorize-desktop"
                 | "phone-authorize-supply"

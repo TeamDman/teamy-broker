@@ -1,6 +1,9 @@
+use crate::broker::shared_preview::SharedPreview;
+use crate::broker::work_guard::WorkGuard;
 use crate::protocol::AcquireRequest;
 use crate::protocol::ApprovalPreviewDisposition;
 use crate::protocol::ApprovalPreviewResult;
+use crate::protocol::Backend;
 use crate::protocol::FailureKind;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -13,7 +16,7 @@ pub(crate) fn approve_tracked(
     request: &AcquireRequest,
     pid: u32,
     cancel: &Arc<AtomicBool>,
-    work: Option<crate::broker::work_guard::WorkGuard>,
+    work: Option<WorkGuard>,
 ) -> eyre::Result<bool> {
     let result = credential_shared_inner(request, pid, cancel, work, None)?;
     eyre::ensure!(
@@ -32,8 +35,8 @@ pub(crate) fn credential_shared(
     request: &AcquireRequest,
     pid: u32,
     cancel: &Arc<AtomicBool>,
-    work: Option<crate::broker::work_guard::WorkGuard>,
-    shared: Arc<crate::broker::shared_preview::SharedPreview>,
+    work: Option<WorkGuard>,
+    shared: Arc<SharedPreview>,
 ) -> eyre::Result<ApprovalPreviewResult> {
     credential_shared_inner(request, pid, cancel, work, Some(shared))
 }
@@ -41,8 +44,8 @@ fn credential_shared_inner(
     request: &AcquireRequest,
     pid: u32,
     cancel: &Arc<AtomicBool>,
-    work: Option<crate::broker::work_guard::WorkGuard>,
-    shared: Option<Arc<crate::broker::shared_preview::SharedPreview>>,
+    work: Option<WorkGuard>,
+    shared: Option<Arc<SharedPreview>>,
 ) -> eyre::Result<ApprovalPreviewResult> {
     request.validate()?;
     let fixture = shared
@@ -76,10 +79,10 @@ fn credential_shared_inner(
                     pid,
                     request.destination,
                     match &request.backend {
-                        crate::protocol::Backend::Memory => "broker memory".to_string(),
-                        crate::protocol::Backend::WindowsCredentialManager(s) =>
+                        Backend::Memory => "broker memory".to_string(),
+                        Backend::WindowsCredentialManager(s) =>
                             format!("Windows Credential Manager: {s}"),
-                        crate::protocol::Backend::WellKnownFile(s) => format!("DPAPI file: {s}"),
+                        Backend::WellKnownFile(s) => format!("DPAPI file: {s}"),
                     }
                 )
             }),
@@ -101,8 +104,8 @@ fn credential_shared_inner(
 pub(crate) fn preview_shared(
     pid: u32,
     cancel: &Arc<AtomicBool>,
-    work: crate::broker::work_guard::WorkGuard,
-    shared: Arc<crate::broker::shared_preview::SharedPreview>,
+    work: WorkGuard,
+    shared: Arc<SharedPreview>,
 ) -> eyre::Result<ApprovalPreviewResult> {
     super::approval_dialog::show_shared(
         &super::approval_dialog_text::ApprovalDialogText {

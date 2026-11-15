@@ -1,12 +1,13 @@
 use facet::Facet;
+use std::fmt;
 #[derive(Facet)]
 pub struct Request {
     pub operation: String,
     pub acquire: Option<super::AcquireRequest>,
     pub lease_id: Option<String>,
 }
-impl std::fmt::Debug for Request {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for Request {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("Request([redacted])")
     }
 }

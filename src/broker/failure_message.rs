@@ -1,10 +1,9 @@
 /// Classify into reviewed static messages. Error payloads are never diagnostic output.
+use crate::protocol::FailureKind;
 #[must_use]
 pub fn classify(error: &eyre::Report) -> &'static str {
-    if error.downcast_ref::<crate::protocol::FailureKind>()
-        == Some(&crate::protocol::FailureKind::ShutdownBlocked)
-    {
-        return crate::protocol::FailureKind::ShutdownBlocked.message();
+    if error.downcast_ref::<FailureKind>() == Some(&FailureKind::ShutdownBlocked) {
+        return FailureKind::ShutdownBlocked.message();
     }
     match error.to_string().as_str() {
         "invalid command line" => "Invalid command line; use --help",

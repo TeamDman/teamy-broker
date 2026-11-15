@@ -1,4 +1,8 @@
+use crate::protocol::ApprovalPreviewDisposition;
 use facet::Facet;
+use std::fmt::Debug;
+use std::fmt::Formatter;
+use std::fmt::Result as FmtResult;
 use std::fs::File;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -58,7 +62,7 @@ pub struct PreviewMetadata {
     pub accepted: Option<bool>,
     pub ack_written: Option<bool>,
     pub origin: Option<PreviewOrigin>,
-    pub decision: Option<crate::protocol::ApprovalPreviewDisposition>,
+    pub decision: Option<ApprovalPreviewDisposition>,
 }
 #[derive(Clone, Debug, Facet)]
 struct PhaseEvent {
@@ -78,8 +82,8 @@ pub struct PreviewTrace {
     state: Mutex<State>,
     failed: AtomicBool,
 }
-impl std::fmt::Debug for PreviewTrace {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Debug for PreviewTrace {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         f.write_str("PreviewTrace([bounded metadata])")
     }
 }
@@ -225,7 +229,7 @@ mod tests {
             phase: PreviewPhase::PreviewResolved,
             metadata: PreviewMetadata {
                 origin: Some(PreviewOrigin::Phone),
-                decision: Some(crate::protocol::ApprovalPreviewDisposition::ApprovedTest),
+                decision: Some(ApprovalPreviewDisposition::ApprovedTest),
                 ack_written: Some(true),
                 ..PreviewMetadata::default()
             },

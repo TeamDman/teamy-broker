@@ -1,3 +1,7 @@
+use crate::broker::synthetic_credential_fixture;
+use crate::protocol::AcquireRequest;
+use crate::protocol::Backend;
+use crate::protocol::Request;
 use arbitrary::Arbitrary;
 use facet::Facet;
 use figue as args;
@@ -24,8 +28,8 @@ pub struct PhoneAuthorizeArgs {
 impl PhoneAuthorizeArgs {
     /// # Errors
     /// Rejects invalid metadata, unavailable state, cancellation or expiry.
-    pub fn request(self) -> eyre::Result<crate::protocol::Request> {
-        let request = crate::protocol::Request {
+    pub fn request(self) -> eyre::Result<Request> {
+        let request = Request {
             operation: if self.synthetic_fixture {
                 "phone-authorize-fixture"
             } else if self.supply {
@@ -34,19 +38,19 @@ impl PhoneAuthorizeArgs {
                 "phone-authorize-desktop"
             }
             .into(),
-            acquire: Some(crate::protocol::AcquireRequest {
+            acquire: Some(AcquireRequest {
                 account: self.account,
                 secret_ref: self.secret_ref,
                 requesting_app: self.requesting_app,
                 purpose: self.purpose,
                 destination: self.destination,
-                backend: crate::protocol::Backend::Memory,
+                backend: Backend::Memory,
             }),
             lease_id: None,
         };
         request.validate()?;
         if self.synthetic_fixture {
-            crate::broker::synthetic_credential_fixture::validate(
+            synthetic_credential_fixture::validate(
                 request
                     .acquire
                     .as_ref()

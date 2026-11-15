@@ -1,11 +1,14 @@
 use std::ffi::OsString;
+use std::fmt::Debug;
+use std::fmt::Formatter;
+use std::fmt::Result as FmtResult;
 use std::path::PathBuf;
 pub(super) enum Arguments {
     Proposal,
     Ready { receipt: PathBuf, phases: PathBuf },
 }
-impl std::fmt::Debug for Arguments {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Debug for Arguments {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         f.write_str("PreviewArguments([redacted])")
     }
 }

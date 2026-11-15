@@ -1,11 +1,18 @@
 use super::Client;
+use crate::protocol::PhoneStatus;
+use crate::protocol::Request;
+use crate::protocol::Response;
+use crate::protocol::pairing_comparison::PairingCode;
+use crate::protocol::pairing_comparison::PairingConfirmationResult;
+use crate::protocol::pairing_comparison::PairingInspection;
+use crate::protocol::wire;
+use std::time::Duration;
+use tokio::net::windows::named_pipe::NamedPipeClient;
+use tokio::time::timeout;
 impl Client {
     /// # Errors
     /// Rejects invalid metadata, unavailable state, cancellation or expiry.
-    pub async fn phone_authorize_once(
-        &self,
-        request: crate::protocol::Request,
-    ) -> eyre::Result<crate::protocol::PhoneStatus> {
+    pub async fn phone_authorize_once(&self, request: Request) -> eyre::Result<PhoneStatus> {
         request.validate()?;
         eyre::ensure!(
             matches!(
@@ -14,32 +21,25 @@ impl Client {
             ),
             "permission operation rejected"
         );
-        tokio::time::timeout(
-            self.request_timeout.min(std::time::Duration::from_secs(5)),
-            async {
-                let mut pipe = self
-                    .connect(false, Some("persistent-no-vault-phone-v1"))
-                    .await?;
-                crate::protocol::wire::write(&mut pipe, &request).await?;
-                let reply: crate::protocol::Response =
-                    crate::protocol::wire::read(&mut pipe).await?;
-                eyre::ensure!(
-                    reply.code == "phone-status",
-                    "per-action permission rejected"
-                );
-                crate::protocol::wire::read(&mut pipe).await
-            },
-        )
+        timeout(self.request_timeout.min(Duration::from_secs(5)), async {
+            let mut pipe = self
+                .connect(false, Some("persistent-no-vault-phone-v1"))
+                .await?;
+            wire::write(&mut pipe, &request).await?;
+            let reply: Response = wire::read(&mut pipe).await?;
+            eyre::ensure!(
+                reply.code == "phone-status",
+                "per-action permission rejected"
+            );
+            wire::read(&mut pipe).await
+        })
         .await
         .map_err(|_redacted_error| eyre::eyre!("phone exchange deadline"))?
     }
     /// Current-user secured pipe; no autostart, no certificate/key export.
     /// # Errors
     /// Rejects unavailable/legacy residents or invalid relationship controls.
-    pub async fn phone_control(
-        &self,
-        operation: &str,
-    ) -> eyre::Result<crate::protocol::PhoneStatus> {
+    pub async fn phone_control(&self, operation: &str) -> eyre::Result<PhoneStatus> {
         eyre::ensure!(
             matches!(
                 operation,
@@ -47,58 +47,44 @@ impl Client {
             ),
             "phone control rejected"
         );
-        let request = crate::protocol::Request::control(operation, None);
+        let request = Request::control(operation, None);
         request.validate()?;
-        tokio::time::timeout(
-            self.request_timeout.min(std::time::Duration::from_secs(5)),
-            async {
-                let mut pipe = self
-                    .connect(false, Some("persistent-no-vault-phone-v1"))
-                    .await?;
-                crate::protocol::wire::write(&mut pipe, &request).await?;
-                let reply: crate::protocol::Response =
-                    crate::protocol::wire::read(&mut pipe).await?;
-                eyre::ensure!(
-                    reply.code == "phone-status",
-                    "phone control rejected; inspect status and revoke before replacing"
-                );
-                crate::protocol::wire::read(&mut pipe).await
-            },
-        )
+        timeout(self.request_timeout.min(Duration::from_secs(5)), async {
+            let mut pipe = self
+                .connect(false, Some("persistent-no-vault-phone-v1"))
+                .await?;
+            wire::write(&mut pipe, &request).await?;
+            let reply: Response = wire::read(&mut pipe).await?;
+            eyre::ensure!(
+                reply.code == "phone-status",
+                "phone control rejected; inspect status and revoke before replacing"
+            );
+            wire::read(&mut pipe).await
+        })
         .await
         .map_err(|_redacted_error| eyre::eyre!("phone exchange deadline"))?
     }
 }
 
 impl Client {
-    async fn pairing_pipe(
-        &self,
-        operation: &str,
-        id: &str,
-    ) -> eyre::Result<tokio::net::windows::named_pipe::NamedPipeClient> {
-        let request = crate::protocol::Request::control(operation, Some(id.into()));
+    async fn pairing_pipe(&self, operation: &str, id: &str) -> eyre::Result<NamedPipeClient> {
+        let request = Request::control(operation, Some(id.into()));
         request.validate()?;
         let mut pipe = self
             .connect(false, Some("persistent-no-vault-phone-v1"))
             .await?;
-        crate::protocol::wire::write(&mut pipe, &request).await?;
+        wire::write(&mut pipe, &request).await?;
         Ok(pipe)
     }
     /// # Errors
     /// Requires exact live attempt; deliberately reveals only its ephemeral comparison.
-    pub async fn pairing_inspect(
-        &self,
-        id: &str,
-    ) -> eyre::Result<crate::protocol::pairing_comparison::PairingInspection> {
-        tokio::time::timeout(
-            self.request_timeout.min(std::time::Duration::from_secs(5)),
-            async {
-                let mut p = self.pairing_pipe("phone-pair-inspect", id).await?;
-                let r: crate::protocol::Response = crate::protocol::wire::read(&mut p).await?;
-                eyre::ensure!(r.code == "pairing-comparison", "comparison unavailable");
-                crate::protocol::wire::read(&mut p).await
-            },
-        )
+    pub async fn pairing_inspect(&self, id: &str) -> eyre::Result<PairingInspection> {
+        timeout(self.request_timeout.min(Duration::from_secs(5)), async {
+            let mut p = self.pairing_pipe("phone-pair-inspect", id).await?;
+            let r: Response = wire::read(&mut p).await?;
+            eyre::ensure!(r.code == "pairing-comparison", "comparison unavailable");
+            wire::read(&mut p).await
+        })
         .await
         .map_err(|_redacted_error| eyre::eyre!("pairing exchange deadline"))?
     }
@@ -107,36 +93,27 @@ impl Client {
     pub async fn pairing_confirm(
         &self,
         id: &str,
-        code: &crate::protocol::pairing_comparison::PairingCode,
-    ) -> eyre::Result<crate::protocol::pairing_comparison::PairingConfirmationResult> {
-        tokio::time::timeout(
-            self.request_timeout.min(std::time::Duration::from_secs(5)),
-            async {
-                let mut p = self.pairing_pipe("phone-pair-confirm", id).await?;
-                crate::protocol::wire::write(&mut p, code).await?;
-                let r: crate::protocol::Response = crate::protocol::wire::read(&mut p).await?;
-                eyre::ensure!(r.code == "pairing-confirmation", "confirmation unavailable");
-                crate::protocol::wire::read(&mut p).await
-            },
-        )
+        code: &PairingCode,
+    ) -> eyre::Result<PairingConfirmationResult> {
+        timeout(self.request_timeout.min(Duration::from_secs(5)), async {
+            let mut p = self.pairing_pipe("phone-pair-confirm", id).await?;
+            wire::write(&mut p, code).await?;
+            let r: Response = wire::read(&mut p).await?;
+            eyre::ensure!(r.code == "pairing-confirmation", "confirmation unavailable");
+            wire::read(&mut p).await
+        })
         .await
         .map_err(|_redacted_error| eyre::eyre!("pairing exchange deadline"))?
     }
     /// # Errors
     /// Cancels only the exact live comparison, without revoking stored trust.
-    pub async fn pairing_cancel(
-        &self,
-        id: &str,
-    ) -> eyre::Result<crate::protocol::pairing_comparison::PairingConfirmationResult> {
-        tokio::time::timeout(
-            self.request_timeout.min(std::time::Duration::from_secs(5)),
-            async {
-                let mut p = self.pairing_pipe("phone-pair-cancel", id).await?;
-                let r: crate::protocol::Response = crate::protocol::wire::read(&mut p).await?;
-                eyre::ensure!(r.code == "pairing-confirmation", "cancellation unavailable");
-                crate::protocol::wire::read(&mut p).await
-            },
-        )
+    pub async fn pairing_cancel(&self, id: &str) -> eyre::Result<PairingConfirmationResult> {
+        timeout(self.request_timeout.min(Duration::from_secs(5)), async {
+            let mut p = self.pairing_pipe("phone-pair-cancel", id).await?;
+            let r: Response = wire::read(&mut p).await?;
+            eyre::ensure!(r.code == "pairing-confirmation", "cancellation unavailable");
+            wire::read(&mut p).await
+        })
         .await
         .map_err(|_redacted_error| eyre::eyre!("pairing exchange deadline"))?
     }

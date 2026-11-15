@@ -1,13 +1,17 @@
+use std::fmt::Debug;
+use std::fmt::Formatter;
+use std::fmt::Result as FmtResult;
+use std::time::Instant;
 use zeroize::Zeroizing;
 pub struct Grant {
     pub(crate) work: super::work_guard::WorkGuard,
     pub id: String,
     pub expires: u64,
-    pub deadline: std::time::Instant,
+    pub deadline: Instant,
     pub bytes: Zeroizing<Vec<u8>>,
 }
-impl std::fmt::Debug for Grant {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Debug for Grant {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         f.write_str("Grant([redacted])")
     }
 }

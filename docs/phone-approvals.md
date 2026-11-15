@@ -4,7 +4,7 @@ The resident broker supports an explicitly enrolled phone for shared approval pr
 
 ## Dependencies and offline checks
 
-The Windows broker uses the pinned official Google Java UKEY2 implementation for initial human comparison, then TLS 1.3 with mutual certificate authentication for enrolled connections. The existing JDK must provide `java`, `javac`, and `jar`. `pairing/java/dependencies-lock.json` pins the local dependency files; `vendor-lock.json` pins the retained upstream sources. Populate the ignored `pairing/java/deps` directory with the separately obtained matching files before building. The build script verifies hashes and fails on missing or mismatched inputs; it downloads nothing and executes no upstream build script.
+The Windows broker uses the pinned official Google Java UKEY2 implementation for initial human comparison, then TLS 1.3 with mutual certificate authentication for enrolled connections. The existing JDK must provide `java`, `javac`, and `jar`. `pairing/java/dependencies-lock.json` pins the local dependency files; `vendor-lock.json` pins the retained upstream sources. Populate the ignored `pairing/java/deps` directory with the separately obtained matching files before building. The build script verifies hashes and fails on missing or mismatched inputs; it downloads nothing and executes no upstream build script. Keep the source locks and vendored UKEY2 `LICENSE`/`NOTICE`; see [pairing ownership and provenance](mobile-handoff.md#pairing-implementation-and-provenance).
 
 Run from the repository root with the required Rust toolchains and dependencies already available:
 
@@ -14,16 +14,36 @@ Run from the repository root with the required Rust toolchains and dependencies 
 rustup run nightly -- cargo fmt --all -- --check
 cargo clippy --offline --workspace --all-targets --all-features --no-deps -- -D warnings
 cargo build --offline --workspace --bins --examples
-cargo test --offline --workspace --features extended_observability -- --test-threads=1 --skip independent_defaults_keep_command_lifecycle_in_debug_file --skip stderr_off_does_not_disable_file_and_existing_files_are_appended --skip command_span_timings_reach_ndjson_without_cluttering_stdio
+cargo test --offline --workspace --features extended_observability -- --test-threads=1
 ```
 
-Build the examples before tests: the provider-cancellation regression launches the owned `synthetic_op_wait` fixture. Keep tests marked `ignore` excluded unless their native storage, scheduler, or private-desktop requirements have been separately reviewed. The three skips above avoid logging tests that read the default live broker endpoint. The remaining tests use synthetic adapters, isolated pipe endpoints, temporary state, and loopback peers.
+Build the examples before tests: provider cancellation launches `synthetic_op_wait`, and logging tests launch `synthetic_logging_cli`. Keep tests marked `ignore` excluded unless their native storage, scheduler, or private-desktop requirements have been separately reviewed. Normal tests use synthetic adapters, isolated pipe endpoints, temporary state, and loopback peers.
 
 Android APK packaging additionally requires an existing approved Android SDK platform 35/36, build tools, and an explicitly selected signing key. `android/build-debug.ps1` produces the synthetic debug package. `android/build-release.ps1` requires an existing private signing identity, password environment-variable names, and its expected fingerprint; it does not create a key or install/pair a device. The public debug signer is unsuitable for real credentials.
 
-Phone networking requires an explicit private build profile. Create the ignored `private-phone-profile.local.json` with string fields `TEAMY_BROKER_DESKTOP_IP`, `TEAMY_BROKER_PHONE_IP`, `TEAMY_BROKER_DESKTOP_NODE`, `TEAMY_BROKER_PHONE_NODE`, `TEAMY_BROKER_TAILNET_USER`, `TEAMY_BROKER_PHONE_NAME`, and an absolute `TEAMY_BROKER_JAVA` executable path. Dot-source `.\use-private-phone-profile.ps1` in the build shell, then build the broker and Android APK in that same shell. Both embed the selected peer scope in their build artifacts; treat those artifacts as private. Without all six peer fields, builds reject phone network activation; incomplete or invalid fields fail the build. Updating the profile requires rebuilding both sides and restarting the broker only when separately authorized.
+The broker reads `phone-profile.json` at runtime through `PhoneProfile::load(&home)`. The caller supplies the application home. The file must identify both peers and an absolute Java executable path. See the schema rules below. Missing or invalid configuration rejects phone network activation.
+
+The legacy `.\use-private-phone-profile.ps1` helper reads the ignored `private-phone-profile.local.json` into the current shell's environment. It requires string values for its seven `TEAMY_BROKER_*` fields. It does not install or migrate the broker's runtime profile.
 
 The listener checks the actual socket peer and local node through Tailscale metadata against that exact configured scope; there is no arbitrary-host or all-interface fallback. The broker also requires the explicitly selected absolute Java executable at runtime. Runtime artifact lookup currently assumes the source-tree `pairing/java` layout.
+
+## Phone profile schema
+
+New runtime profiles must include the top-level field `"schema_version": 1`. Version 1 keeps the existing fields:
+
+- `TEAMY_BROKER_DESKTOP_IP` and `TEAMY_BROKER_PHONE_IP`: distinct IPv4 addresses within the Tailscale range
+- `TEAMY_BROKER_DESKTOP_NODE` and `TEAMY_BROKER_PHONE_NODE`: node identities
+- `TEAMY_BROKER_TAILNET_USER`: a nonzero user ID, written as a JSON number; quoted numeric IDs remain accepted
+- `TEAMY_BROKER_PHONE_NAME`: the expected phone node name
+- `TEAMY_BROKER_JAVA`: an absolute Java executable path
+
+The reader checks the schema version before decoding the profile fields. Missing `schema_version`, or an explicit value of `0`, selects the legacy layout. That layout has the same seven fields and upgrades to version 1 without changing the peer scope. The migration report identifies the source version and includes a diagnostic. File loading logs that diagnostic and leaves the file unchanged.
+
+`PhoneProfile::parse_json` returns the runtime profile and migration report. `PhoneProfile::to_json` validates the profile and serializes version 1, including its version field. To update an existing file, serialize the parsed profile and save the result explicitly. Reading never rewrites configuration.
+
+Malformed versions and unsupported versions fail. The reader does not retry them as legacy profiles. Both supported layouts enforce the same peer and Java-path validation. Configuration files remain limited to 8192 bytes, and load failures retain their underlying I/O, UTF-8, and JSON errors.
+
+The implementation follows the [Facet JSON versioning approach](https://teamdman.github.io/teamy-docs/facet-json-versioning.html): version preflight, separate schema types, and an explicit upgrade. Future schema changes must add a version-specific type and conversion, with historical-input and unsupported-version tests.
 
 ## Explicit enrollment
 
@@ -50,6 +70,14 @@ Inspection intentionally displays the active comparison and expiry. Treat that o
 After enrollment, start the phone's approval connection from the visible app with notifications enabled. Its nonexported foreground service has an ongoing Stop notification and bounded reconnect backoff. It is not boot-started or sticky. Phone process death/force-stop requires reopening and starting it. Sleep, Doze, OEM restrictions, or network loss can delay notifications; they do not extend approval deadlines.
 
 Desktop identity state uses current-user DPAPI; Android uses a nonexportable Keystore key and a transactional private identity selection. Mutual TLS checks the enrolled leaf identity. Application messages bind the relationship generation, fresh connection session, increasing sequence, and exact request ID. TLS resumption and early data are disabled. This remains a cooperative same-user broker boundary, not remote APK attestation or protection against a compromised OS.
+
+Android publishes the selected key alias and desktop pin together through `IdentitySelectionStore` using a SQLite transaction with `synchronous=FULL`. `DurableIdentitySelection` reads committed state instead of caching an uncommitted candidate. Legacy preferences remain a read-only fallback until a selection record exists; Forget commits an empty selection before key deletion so that fallback cannot restore old trust. Host tests exercise failure/restart/retry through an injected store, not physical-device storage fault injection.
+
+## Connection deadlines
+
+Human comparison and network operations have different budgets. Enrollment retains its original five-minute window. The current resident transport uses a ten-second idle-first-byte wait and a separate five-second deadline to assemble the rest of a frame. A slow byte stream cannot continually renew frame assembly. Server writes are bounded to five seconds. See `src/broker/phone/{timing,message_read,transport}.rs`.
+
+Android's `PhoneTiming` sets a three-second TCP connect timeout, a 25-second connection operation, a 30-second exchange and a five-second outbound write budget. These whole-operation budgets account for the server's peer checks. `OperationDeadline` cancels completed timers without closing a later replacement socket. Reconnect creates a fresh session and sequence and reconciles current state; it never renews a request's 60-second lifetime or a credential's 15-minute lease. A deadline category identifies the observed timer boundary, not the underlying cause of a network disconnect or device scheduling delay.
 
 ## Previews and credential actions
 

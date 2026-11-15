@@ -20,7 +20,7 @@ final class PhoneConnection implements AutoCloseable {
         timer=java.util.concurrent.Executors.newSingleThreadScheduledExecutor();
         OperationDeadline limit=deadline(PhoneTiming.CONNECT_MS);
         ConnectionFailure.Phase phase=ConnectionFailure.Phase.TCP_CONNECT;
-        try{PrivatePhoneConfig.requireConfigured();socket.connect(new java.net.InetSocketAddress(PrivatePhoneConfig.DESKTOP,PrivatePhoneConfig.PORT),PhoneTiming.TCP_MS);phase=ConnectionFailure.Phase.TLS_HANDSHAKE;socket.startHandshake();phase=ConnectionFailure.Phase.HELLO_READ;hello=read();phase=ConnectionFailure.Phase.HELLO_VALIDATION;session=hello.getString("session_id");java.util.UUID.fromString(session);validate(hello,0);}
+        try{PrivatePhoneConfig profile=PhoneConfigStore.load(context);socket.connect(new java.net.InetSocketAddress(profile.desktop,PrivatePhoneConfig.PORT),PhoneTiming.TCP_MS);phase=ConnectionFailure.Phase.TLS_HANDSHAKE;socket.startHandshake();phase=ConnectionFailure.Phase.HELLO_READ;hello=read();phase=ConnectionFailure.Phase.HELLO_VALIDATION;session=hello.getString("session_id");java.util.UUID.fromString(session);validate(hello,0);}
         catch(Exception error){close();throw new ConnectionFailure(phase,limit.expired()?ConnectionFailure.Category.TIMEOUT:ConnectionFailure.classify(error));}finally{limit.close();}
     }
     private JSONObject read()throws Exception {byte[] bytes=Frames.read(socket.getInputStream());try{if(bytes.length>16384)throw new Exception("oversized metadata");return new JSONObject(new String(bytes,StandardCharsets.UTF_8));}finally{Arrays.fill(bytes,(byte)0);}}

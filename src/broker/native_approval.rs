@@ -1,8 +1,16 @@
 use super::approval::Approval;
+use crate::platform::native_approval;
 use crate::protocol::AcquireRequest;
+use crate::protocol::ApprovalPreviewDisposition;
+use crate::protocol::ApprovalPreviewResult;
+use crate::protocol::FailureKind;
+use crate::protocol::wire;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::time::Duration;
+use tokio::task;
+use tokio::time;
 #[derive(Debug)]
 pub struct NativeApproval;
 impl Approval for NativeApproval {
@@ -55,29 +63,25 @@ impl Approval for NativeApproval {
         pid: u32,
         cancel: Arc<AtomicBool>,
         work: super::work_guard::WorkGuard,
-    ) -> Pin<
-        Box<dyn Future<Output = eyre::Result<crate::protocol::ApprovalPreviewResult>> + Send + 'a>,
-    > {
+    ) -> Pin<Box<dyn Future<Output = eyre::Result<ApprovalPreviewResult>> + Send + 'a>> {
         Box::pin(async move {
             let _pending_work = work.phase(super::work_kind::WorkKind::Approval);
             let shared =
                 super::shared_preview::SharedPreviewHub::resident().begin(Arc::clone(&cancel))?;
             let request = Arc::clone(&shared);
-            let mut result = tokio::task::spawn_blocking(move || {
-                crate::platform::native_approval::preview_shared(pid, &cancel, work, request)
+            let mut result = task::spawn_blocking(move || {
+                native_approval::preview_shared(pid, &cancel, work, request)
             })
             .await
-            .map_err(|_redacted_error| {
-                eyre::Report::new(crate::protocol::FailureKind::ApprovalUnavailable)
-            })??;
-            if result.disposition == crate::protocol::ApprovalPreviewDisposition::Unavailable {
+            .map_err(|_redacted_error| eyre::Report::new(FailureKind::ApprovalUnavailable))??;
+            if result.disposition == ApprovalPreviewDisposition::Unavailable {
                 shared.resolve(result.disposition);
             }
             while shared.outcome().is_none() {
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                time::sleep(Duration::from_millis(20)).await;
             }
             result.disposition = shared.outcome().expect("resolved preview");
-            result.finished_unix_ms = crate::protocol::wire::unix_ms()?;
+            result.finished_unix_ms = wire::unix_ms()?;
             Ok(result)
         })
     }
@@ -90,18 +94,11 @@ impl Approval for NativeApproval {
     ) -> Pin<Box<dyn Future<Output = eyre::Result<bool>> + Send + 'a>> {
         let request = request.clone();
         Box::pin(async move {
-            tokio::task::spawn_blocking(move || {
-                crate::platform::native_approval::approve_tracked(
-                    &request,
-                    pid,
-                    &cancel,
-                    Some(work),
-                )
+            task::spawn_blocking(move || {
+                native_approval::approve_tracked(&request, pid, &cancel, Some(work))
             })
             .await
-            .map_err(|_redacted_error| {
-                eyre::Report::new(crate::protocol::FailureKind::ApprovalUnavailable)
-            })?
+            .map_err(|_redacted_error| eyre::Report::new(FailureKind::ApprovalUnavailable))?
         })
     }
 }

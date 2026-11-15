@@ -1,4 +1,8 @@
+use crate::protocol::SharedPreviewSnapshot;
 use facet::Facet;
+use std::fmt::Debug;
+use std::fmt::Formatter;
+use std::fmt::Result as FmtResult;
 #[derive(Facet)]
 pub(super) struct Message {
     pub version: u32,
@@ -9,8 +13,8 @@ pub(super) struct Message {
     pub request_id: Option<String>,
     pub decision: Option<String>,
 }
-impl std::fmt::Debug for Message {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Debug for Message {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         f.write_str("PhoneMessage([no-vault])")
     }
 }
@@ -61,6 +65,6 @@ pub(super) struct Reply {
     pub scope: String,
     pub session_id: String,
     pub sequence: u64,
-    pub pending: Option<crate::protocol::SharedPreviewSnapshot>,
+    pub pending: Option<SharedPreviewSnapshot>,
     pub accepted: Option<bool>,
 }

@@ -7,6 +7,7 @@ use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
 use tokio::net::windows::named_pipe::NamedPipeServer;
+use tokio::time;
 pub(super) async fn execute(
     pipe: &mut NamedPipeServer,
     engine: &Arc<super::engine::Engine>,
@@ -36,7 +37,7 @@ pub(super) async fn execute(
         }
     };
     // EOF/extra input, request timeout and shutdown drop the future and cancel this request.
-    let grant = tokio::select! {result=tokio::time::timeout(Duration::from_secs(185),acquire)=>result.unwrap_or_else(|_redacted|Err(protocol::FailureKind::RequestTimedOut.into())),_=pipe.read_u8()=>return Ok(())};
+    let grant = tokio::select! {result=time::timeout(Duration::from_secs(185),acquire)=>result.unwrap_or_else(|_redacted|Err(protocol::FailureKind::RequestTimedOut.into())),_=pipe.read_u8()=>return Ok(())};
     match grant {
         Ok(grant) => super::server::send_grant(pipe, engine, grant).await,
         Err(error) => {

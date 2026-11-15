@@ -1,20 +1,28 @@
 use super::engine::Engine;
+use crate::platform::identity;
+use crate::platform::pipe_security;
 use crate::protocol::Hello;
 use crate::protocol::Request;
 use crate::protocol::Response;
 use crate::protocol::{self};
+use std::mem;
 use std::os::windows::io::AsRawHandle;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+use std::time::Instant;
 use teamy_cancellation::CancellationToken;
 use tokio::net::windows::named_pipe::NamedPipeServer;
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
+use tokio::time;
+use windows_sys::Win32::System::Pipes::GetNamedPipeClientProcessId;
 /// # Errors
 ///
 /// Returns an error on invalid configuration, expired leases, denial, or failed I/O.
 pub async fn serve(engine: Arc<Engine>, cancellation: CancellationToken) -> eyre::Result<()> {
     tracing::info!(phase = "identity-query", "Broker startup");
-    let endpoint = crate::platform::identity::endpoint()?;
+    let endpoint = identity::endpoint()?;
     tracing::info!(phase = "identity-ready", "Broker startup");
     serve_at(engine, cancellation, &endpoint, true).await
 }
@@ -27,14 +35,14 @@ pub async fn serve_at(
     endpoint: &str,
     reconcile: bool,
 ) -> eyre::Result<()> {
-    let mut listener = crate::platform::pipe_security::create(endpoint, true)?;
+    let mut listener = pipe_security::create(endpoint, true)?;
     tracing::info!(phase = "pipe-created", "Broker startup");
     // First pipe instance remains held throughout startup: racing servers cannot reconcile live leases.
     if reconcile {
         tracing::info!(phase = "reconcile", "Broker startup");
         super::persistence::reconcile()?;
     }
-    let phone_task = if reconcile && endpoint == crate::platform::identity::endpoint()? {
+    let phone_task = if reconcile && endpoint == identity::endpoint()? {
         let controller = super::phone::Controller::resident()?;
         let cancellation = cancellation.clone();
         let engine = Arc::clone(&engine);
@@ -54,15 +62,15 @@ pub async fn serve_at(
     };
     tracing::info!(phase = "ready", "Broker ready");
     let instance = uuid::Uuid::new_v4().to_string();
-    let mut clients = tokio::task::JoinSet::new();
-    let slots = Arc::new(tokio::sync::Semaphore::new(32));
-    let mut maintenance = tokio::time::interval(Duration::from_millis(100));
+    let mut clients = JoinSet::new();
+    let slots = Arc::new(Semaphore::new(32));
+    let mut maintenance = time::interval(Duration::from_millis(100));
     loop {
         tokio::select! {
             result=listener.connect()=>{
                 result?;
-                let next=crate::platform::pipe_security::create(endpoint,false)?;
-                let connected=std::mem::replace(&mut listener,next);
+                let next=pipe_security::create(endpoint,false)?;
+                let connected=mem::replace(&mut listener,next);
                 if let Ok(permit)=Arc::clone(&slots).try_acquire_owned(){
                     let engine=Arc::clone(&engine);let instance=instance.clone();
                     clients.spawn(async move {let _permit=permit;let _=session(connected,engine,instance).await;});
@@ -94,10 +102,10 @@ async fn session(
     let hello = server_hello(instance_id);
     protocol::wire::write(&mut pipe, &hello).await?;
     let peer: Hello =
-        tokio::time::timeout(Duration::from_secs(5), protocol::wire::read(&mut pipe)).await??;
+        time::timeout(Duration::from_secs(5), protocol::wire::read(&mut pipe)).await??;
     eyre::ensure!(peer.compatible(), "incompatible SDK");
     let request: Request =
-        tokio::time::timeout(Duration::from_secs(5), protocol::wire::read(&mut pipe)).await??;
+        time::timeout(Duration::from_secs(5), protocol::wire::read(&mut pipe)).await??;
     request.validate()?;
     let is_stop = matches!(request.operation.as_str(), "stop" | "stop-force");
     let _control_work = if matches!(
@@ -157,7 +165,7 @@ async fn session(
         },
         _ => Response::code("unsupported"),
     };
-    let written = tokio::time::timeout(
+    let written = time::timeout(
         Duration::from_secs(5),
         protocol::wire::write(&mut pipe, &response),
     )
@@ -172,12 +180,7 @@ async fn session(
 pub(super) fn peer_pid(pipe: &NamedPipeServer) -> eyre::Result<u32> {
     let mut pid = 0;
     // SAFETY: pipe owns a connected live named-pipe handle; PID output is writable.
-    let result = unsafe {
-        windows_sys::Win32::System::Pipes::GetNamedPipeClientProcessId(
-            pipe.as_raw_handle().cast(),
-            &raw mut pid,
-        )
-    };
+    let result = unsafe { GetNamedPipeClientProcessId(pipe.as_raw_handle().cast(), &raw mut pid) };
     eyre::ensure!(result != 0, "peer identity unavailable");
     Ok(pid)
 }
@@ -189,7 +192,7 @@ pub(super) async fn send_grant(
 ) -> eyre::Result<()> {
     eyre::ensure!(
         protocol::wire::unix_ms()? < grant.expires
-            && std::time::Instant::now() < grant.deadline
+            && Instant::now() < grant.deadline
             && !engine.stopping.load(Ordering::SeqCst),
         "expired"
     );
@@ -202,7 +205,7 @@ pub(super) async fn send_grant(
             remaining_millis: Some(u64::try_from(
                 grant
                     .deadline
-                    .saturating_duration_since(std::time::Instant::now())
+                    .saturating_duration_since(Instant::now())
                     .as_millis(),
             )?),
             status: None,

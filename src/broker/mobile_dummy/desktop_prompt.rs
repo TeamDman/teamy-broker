@@ -1,4 +1,7 @@
 use super::desktop_prompt_state::DesktopPromptState;
+use crate::broker::work_kind::WorkKind;
+use std::mem;
+use std::ptr;
 use teamy_broker_handoff::local_decision::LocalDecision;
 use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::UI::Controls::TASKDIALOG_BUTTON;
@@ -43,7 +46,7 @@ unsafe extern "system" fn callback(
     0
 }
 pub(super) fn show(state: &DesktopPromptState) -> eyre::Result<()> {
-    let _dialog = state.work.phase(crate::broker::work_kind::WorkKind::Dialog);
+    let _dialog = state.work.phase(WorkKind::Dialog);
     let wide = |text: &str| text.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
     let title = wide("teamy-broker DUMMY ONLY broadcast approval");
     let content = wide(&format!(
@@ -77,7 +80,7 @@ pub(super) fn show(state: &DesktopPromptState) -> eyre::Result<()> {
         },
     ];
     let config = TASKDIALOGCONFIG {
-        cbSize: u32::try_from(std::mem::size_of::<TASKDIALOGCONFIG>())?,
+        cbSize: u32::try_from(mem::size_of::<TASKDIALOGCONFIG>())?,
         dwFlags: TDF_ALLOW_DIALOG_CANCELLATION | TDF_CALLBACK_TIMER,
         pszWindowTitle: title.as_ptr(),
         pszContent: content.as_ptr(),
@@ -85,16 +88,16 @@ pub(super) fn show(state: &DesktopPromptState) -> eyre::Result<()> {
         pButtons: buttons.as_ptr(),
         nDefaultButton: DENY,
         pfCallback: Some(callback),
-        lpCallbackData: (std::ptr::from_ref(state)) as isize,
+        lpCallbackData: (ptr::from_ref(state)) as isize,
         ..Default::default()
     };
     // SAFETY: all configuration/string/button/state pointers live for this synchronous call.
     let result = unsafe {
         TaskDialogIndirect(
             &raw const config,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
         )
     };
     eyre::ensure!(result >= 0, "dummy desktop UI unavailable");

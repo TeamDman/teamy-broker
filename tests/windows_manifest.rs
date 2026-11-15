@@ -1,3 +1,5 @@
+use std::env;
+use std::process::Command as ProcessCommand;
 #[test]
 fn windows_resources_remain_wired_into_the_build() {
     let manifest = include_str!("../resources/app.manifest");
@@ -15,15 +17,15 @@ fn windows_resources_remain_wired_into_the_build() {
 #[cfg(windows)]
 #[test]
 fn built_executable_has_native_dpi_manifest() {
-    let executable = std::env::current_exe()
+    let executable = env::current_exe()
         .unwrap()
         .parent()
         .unwrap()
         .parent()
         .unwrap()
         .join(concat!(env!("CARGO_PKG_NAME"), ".exe"));
-    for executable in [executable, std::env::current_exe().unwrap()] {
-        let output = std::process::Command::new("powershell.exe")
+    for executable in [executable, env::current_exe().unwrap()] {
+        let output = ProcessCommand::new("powershell.exe")
             .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
             .arg(concat!(
                 env!("CARGO_MANIFEST_DIR"),

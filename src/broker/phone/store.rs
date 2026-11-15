@@ -1,8 +1,21 @@
+use crate::platform::dpapi;
 use facet::Facet;
+use std::fmt::Debug;
+use std::fmt::Formatter;
+use std::fmt::Result as FmtResult;
+use std::fs;
+use std::fs::File;
+use std::fs::OpenOptions;
+use std::io::ErrorKind;
 use std::io::Read;
 use std::io::Write;
+use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 use std::path::PathBuf;
+use std::str;
+use windows_sys::Win32::Storage::FileSystem::MOVEFILE_REPLACE_EXISTING;
+use windows_sys::Win32::Storage::FileSystem::MOVEFILE_WRITE_THROUGH;
+use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
 use zeroize::Zeroizing;
 #[derive(Facet, Clone)]
 pub(super) struct Record {
@@ -18,8 +31,8 @@ impl Drop for Record {
         zeroize::Zeroize::zeroize(&mut self.private_key);
     }
 }
-impl std::fmt::Debug for Record {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Debug for Record {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         f.write_str("PhoneRecord([protected identity])")
     }
 }
@@ -35,17 +48,17 @@ impl Store {
         Ok(Self(path))
     }
     pub fn load(&self) -> eyre::Result<Option<Record>> {
-        let file = match std::fs::File::open(&self.0) {
+        let file = match File::open(&self.0) {
             Ok(file) => file,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
             Err(_redacted_error) => eyre::bail!("phone store unavailable"),
         };
         let mut bytes = Vec::new();
         file.take(32769).read_to_end(&mut bytes)?;
         eyre::ensure!(bytes.len() <= 32768, "phone store rejected");
-        let plain = crate::platform::dpapi::protect(&bytes, true)?;
+        let plain = dpapi::protect(&bytes, true)?;
         let record: Record = facet_json::from_str(
-            std::str::from_utf8(&plain)
+            str::from_utf8(&plain)
                 .map_err(|_redacted_error| eyre::eyre!("phone identity rejected"))?,
         )
         .map_err(|_redacted_error| eyre::eyre!("phone identity rejected"))?;
@@ -58,12 +71,12 @@ impl Store {
             .0
             .parent()
             .ok_or_else(|| eyre::eyre!("phone store unavailable"))?;
-        std::fs::create_dir_all(parent)?;
+        fs::create_dir_all(parent)?;
         let plain = Zeroizing::new(facet_json::to_string(record)?);
-        let encrypted = crate::platform::dpapi::protect(plain.as_bytes(), false)?;
+        let encrypted = dpapi::protect(plain.as_bytes(), false)?;
         let temporary = parent.join(format!("phone-{}.tmp", uuid::Uuid::new_v4()));
         let result = (|| {
-            let mut file = std::fs::OpenOptions::new()
+            let mut file = OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .open(&temporary)?;
@@ -72,15 +85,11 @@ impl Store {
             drop(file);
             replace(&temporary, &self.0)
         })();
-        let _ = std::fs::remove_file(&temporary);
+        let _ = fs::remove_file(&temporary);
         result
     }
 }
 fn replace(source: &Path, target: &Path) -> eyre::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::MOVEFILE_REPLACE_EXISTING;
-    use windows_sys::Win32::Storage::FileSystem::MOVEFILE_WRITE_THROUGH;
-    use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
     let source: Vec<_> = source.as_os_str().encode_wide().chain(Some(0)).collect();
     let target: Vec<_> = target.as_os_str().encode_wide().chain(Some(0)).collect();
     // SAFETY: both NUL terminated paths remain alive throughout the synchronous atomic replacement.

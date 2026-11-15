@@ -10,10 +10,14 @@ use super::preview_phase::emit;
 use crate::protocol::ApprovalPreviewDisposition;
 use crate::protocol::SharedPreviewSnapshot;
 use crate::sdk::Client;
+use std::str;
 use std::sync::Arc;
+use std::time::Duration;
 use teamy_broker_handoff::envelope::Envelope;
 use teamy_broker_handoff::pending::Pending;
 use teamy_broker_handoff::session::Session;
+use tokio::time;
+use tokio::time::Instant;
 use zeroize::Zeroizing;
 #[derive(Debug)]
 enum Observation {
@@ -45,24 +49,21 @@ impl PairedSocket {
                 trace.as_ref().is_none_or(|trace| !trace.failed()),
                 "phase diagnostics unavailable"
             );
-            let frame =
-                match tokio::time::timeout_at(self.until, read_frame(&mut self.socket)).await {
-                    Ok(Ok(frame)) => frame,
-                    Ok(Err(_redacted_error)) => {
-                        emit(trace.as_deref(), PreviewPhase::TransportUnavailable);
-                        eyre::bail!("preview transport unavailable");
-                    }
-                    Err(_redacted_error) => {
-                        emit(trace.as_deref(), PreviewPhase::SessionDeadline);
-                        eyre::bail!("preview session expired");
-                    }
-                };
-            let until = self
-                .until
-                .min(tokio::time::Instant::now() + std::time::Duration::from_secs(5));
-            tokio::time::timeout_at(until, async {
+            let frame = match time::timeout_at(self.until, read_frame(&mut self.socket)).await {
+                Ok(Ok(frame)) => frame,
+                Ok(Err(_redacted_error)) => {
+                    emit(trace.as_deref(), PreviewPhase::TransportUnavailable);
+                    eyre::bail!("preview transport unavailable");
+                }
+                Err(_redacted_error) => {
+                    emit(trace.as_deref(), PreviewPhase::SessionDeadline);
+                    eyre::bail!("preview session expired");
+                }
+            };
+            let until = self.until.min(Instant::now() + Duration::from_secs(5));
+            time::timeout_at(until, async {
                 let plain = self.worker.call(7, &frame).await?;
-                let packet: Packet = facet_json::from_str(std::str::from_utf8(&plain)?)?;
+                let packet: Packet = facet_json::from_str(str::from_utf8(&plain)?)?;
                 let (response, observation) = process(&session, &client, packet).await?;
                 let response = Zeroizing::new(facet_json::to_string(&response)?);
                 let encrypted = self.worker.call(6, response.as_bytes()).await?;
@@ -105,9 +106,9 @@ async fn process(
                 .iter()
                 .position(|byte| *byte == 0)
                 .ok_or_else(|| eyre::eyre!("invalid preview decision"))?;
-            let exact = std::str::from_utf8(&outer[..split])?;
+            let exact = str::from_utf8(&outer[..split])?;
             let snapshot: SharedPreviewSnapshot = facet_json::from_str(exact)?;
-            let inner: Envelope = facet_json::from_str(std::str::from_utf8(&outer[split + 1..])?)?;
+            let inner: Envelope = facet_json::from_str(str::from_utf8(&outer[split + 1..])?)?;
             let decision = session.open(exact.as_bytes(), &inner)?;
             let disposition = match decision.as_slice() {
                 [1] => ApprovalPreviewDisposition::ApprovedTest,

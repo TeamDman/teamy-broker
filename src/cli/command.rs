@@ -1,5 +1,9 @@
+use crate::broker::app_request::AppRequest;
+use crate::protocol::Request;
+use crate::protocol::pairing_comparison::PairingCode;
 use arbitrary::Arbitrary;
 use facet::Facet;
+use std::path::PathBuf;
 #[derive(Facet, Arbitrary, Debug, PartialEq)]
 #[repr(u8)]
 pub enum Command {
@@ -54,12 +58,18 @@ impl Command {
     }
     /// # Errors
     ///
-    /// Returns an error on invalid configuration, expired leases, denial, or failed I/O.
-    pub fn into_request(self) -> eyre::Result<crate::broker::app_request::AppRequest> {
-        use crate::broker::app_request::AppRequest;
-        use crate::protocol::Request;
+    /// Returns an error on invalid configuration or missing collected comparison input.
+    /// This conversion performs no I/O; CLI invocation collects stdin separately.
+    pub fn into_request(self) -> eyre::Result<AppRequest> {
+        self.into_request_with_comparison(None)
+    }
+
+    pub(crate) fn into_request_with_comparison(
+        self,
+        comparison: Option<PairingCode>,
+    ) -> eyre::Result<AppRequest> {
         Ok(match self {
-            Self::Serve(args) => AppRequest::Serve(std::path::PathBuf::from(
+            Self::Serve(args) => AppRequest::Serve(PathBuf::from(
                 args.op_executable.unwrap_or_else(|| "op.exe".into()),
             )),
             Self::Status(_) => AppRequest::Control(Request::control("status", None)),
@@ -71,13 +81,8 @@ impl Command {
             }
 
             Self::PhonePairConfirm(args) => {
-                uuid::Uuid::parse_str(&args.attempt_id)
-                    .map_err(|_redacted_error| eyre::eyre!("invalid attempt ID"))?;
-                eyre::ensure!(args.comparison_stdin, "--comparison-stdin required");
-                let code = super::phone_pair_confirm::read_code(
-                    std::io::stdin(),
-                    std::time::Duration::from_secs(5),
-                )?;
+                args.validate()?;
+                let code = comparison.ok_or_else(|| eyre::eyre!("comparison input required"))?;
                 AppRequest::PairingConfirm {
                     attempt_id: args.attempt_id,
                     code,

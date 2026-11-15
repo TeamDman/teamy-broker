@@ -1,5 +1,6 @@
 use super::Backend;
 use facet::Facet;
+use std::fmt;
 #[derive(Facet, Clone, PartialEq, Eq)]
 pub struct AcquireRequest {
     pub account: String,
@@ -9,8 +10,8 @@ pub struct AcquireRequest {
     pub destination: String,
     pub backend: Backend,
 }
-impl std::fmt::Debug for AcquireRequest {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for AcquireRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("AcquireRequest([redacted])")
     }
 }

@@ -1,37 +1,46 @@
 //! Isolated dummy-only SDK consumer and desktop approval demo.
+use std::env;
+use std::ffi::OsString;
+use std::io;
+use std::io::Write;
+use std::panic;
+use std::process;
 use std::sync::Arc;
 use std::time::Duration;
 use teamy_broker::broker::engine::Engine;
 use teamy_broker::broker::mobile_dummy::adapter::MobileDummyAdapter;
 use teamy_broker::broker::mobile_dummy::broadcast_approval::BroadcastDummyApproval;
 use teamy_broker::broker::mobile_dummy::storage::DummyMemoryStorage;
+use teamy_broker::broker::mobile_dummy::tailnet_peer::PORT;
+use teamy_broker::broker::mobile_dummy::tailnet_peer::TailnetPeer;
 use teamy_broker::broker::mobile_dummy::{self};
+use teamy_broker::broker::server;
+use teamy_broker::paths::AppHome;
 use teamy_broker::sdk::Client;
 use teamy_broker_handoff::queue::Queue;
 use teamy_broker_handoff::session::Session;
+use tokio::net::TcpListener;
+use tokio::runtime::Builder;
+use tokio::task;
+use tokio::time;
+use tokio::time::Instant;
 fn main() {
-    std::panic::set_hook(Box::new(|_| {}));
+    panic::set_hook(Box::new(|_| {}));
     if run().is_err() {
-        std::process::exit(1);
+        process::exit(1);
     }
 }
 fn run() -> eyre::Result<()> {
-    use teamy_broker::broker::mobile_dummy::tailnet_peer::ACTIVATION_APPROVED;
-    use teamy_broker::broker::mobile_dummy::tailnet_peer::DESKTOP;
-    use teamy_broker::broker::mobile_dummy::tailnet_peer::PORT;
-    use teamy_broker::broker::mobile_dummy::tailnet_peer::TailnetPeer;
-    if std::env::args_os().skip(1).collect::<Vec<_>>()
-        != [std::ffi::OsString::from("--activate-dummy-tailnet")]
-    {
-        std::io::Write::write_all(&mut std::io::stdout().lock(), b"DUMMY ONLY: configured exact TLS endpoint and peer, 180-second limit. Await phone readiness and explicit launch; no listener started.\n")?;
+    if env::args_os().skip(1).collect::<Vec<_>>() != [OsString::from("--activate-dummy-tailnet")] {
+        Write::write_all(&mut io::stdout().lock(), b"DUMMY ONLY: configured exact TLS endpoint and peer, 180-second limit. Await phone readiness and explicit launch; no listener started.\n")?;
         return Ok(());
     }
-    eyre::ensure!(ACTIVATION_APPROVED, "tailnet activation blocked");
-    tokio::runtime::Builder::new_current_thread()
+    let profile = mobile_dummy::phone_profile::PhoneProfile::load(&AppHome::resolve()?)?;
+    Builder::new_current_thread()
         .enable_all()
         .build()?
-        .block_on(TailnetPeer::verify_desktop())?;
-    let identity = mobile_dummy::tls_identity::TlsIdentity::random()?;
+        .block_on(TailnetPeer::verify_desktop_for(&profile))?;
+    let identity = mobile_dummy::tls_identity::TlsIdentity::for_address(profile.desktop.get())?;
     let session = Session::random()?;
     mobile_dummy::bootstrap::show_with_tls(&session, &identity.fingerprint)?;
     let queue = Arc::new(Queue::new(session));
@@ -42,17 +51,20 @@ fn run() -> eyre::Result<()> {
         }),
         Arc::new(DummyMemoryStorage),
     ));
-    tokio::runtime::Builder::new_current_thread()
+    Builder::new_current_thread()
         .enable_all()
         .build()?
         .block_on(async {
-            let listener = tokio::net::TcpListener::bind((DESKTOP, PORT)).await?;
-            let until = tokio::time::Instant::now() + Duration::from_mins(3);
+            let listener = TcpListener::bind((profile.desktop.get(), PORT)).await?;
+            let until = Instant::now() + Duration::from_mins(3);
             let expiry = chrono::Utc::now() + chrono::Duration::minutes(3);
             // Only public endpoint/deadline status is emitted. Key/pin remain in the native dialog.
-            let status = format!("Dummy TLS listener bound at {DESKTOP}:{PORT}; permitted phone {}; expires {} UTC at latest.\n", teamy_broker::broker::mobile_dummy::tailnet_peer::PHONE, expiry.format("%Y-%m-%d %H:%M:%S%.3f"));
-            std::io::Write::write_all(&mut std::io::stdout().lock(), status.as_bytes())?;
-            std::io::Write::flush(&mut std::io::stdout().lock())?;
+            let status = format!(
+                "Dummy TLS listener bound; expires {} UTC at latest.\n",
+                expiry.format("%Y-%m-%d %H:%M:%S%.3f")
+            );
+            Write::write_all(&mut io::stdout().lock(), status.as_bytes())?;
+            Write::flush(&mut io::stdout().lock())?;
             let tcp = tokio::spawn(mobile_dummy::tls_server::serve_until(
                 listener,
                 queue,
@@ -66,7 +78,7 @@ fn run() -> eyre::Result<()> {
             // Random test endpoint and reconcile=false keep existing daemon/cache state untouched.
             let ipc_endpoint = endpoint.clone();
             let ipc = tokio::spawn(async move {
-                teamy_broker::broker::server::serve_at(
+                server::serve_at(
                     engine,
                     teamy_cancellation::CancellationToken::new(),
                     &ipc_endpoint,
@@ -78,9 +90,9 @@ fn run() -> eyre::Result<()> {
                 .with_endpoint(endpoint)
                 .with_deadlines(Duration::from_secs(2), Duration::from_secs(65));
             let result = async {
-                tokio::time::timeout(Duration::from_secs(3), async {
+                time::timeout(Duration::from_secs(3), async {
                     while !client.status().await?.running {
-                        tokio::task::yield_now().await;
+                        task::yield_now().await;
                     }
                     Ok::<_, eyre::Report>(())
                 })
@@ -93,8 +105,8 @@ fn run() -> eyre::Result<()> {
                 );
                 client.purge(Some(secret.lease_id.clone())).await?;
                 drop(secret);
-                let mut out = std::io::stdout().lock();
-                std::io::Write::write_all(
+                let mut out = io::stdout().lock();
+                Write::write_all(
                     &mut out,
                     b"Dummy SDK handoff completed; memory lease purged.\n",
                 )?;
@@ -103,9 +115,12 @@ fn run() -> eyre::Result<()> {
             .await;
             tcp.abort();
             let _ = tcp.await;
-            let stopped = format!("Dummy TLS listener stopped at {} UTC.\n", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"));
-            std::io::Write::write_all(&mut std::io::stdout().lock(), stopped.as_bytes())?;
-            std::io::Write::flush(&mut std::io::stdout().lock())?;
+            let stopped = format!(
+                "Dummy TLS listener stopped at {} UTC.\n",
+                chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f")
+            );
+            Write::write_all(&mut io::stdout().lock(), stopped.as_bytes())?;
+            Write::flush(&mut io::stdout().lock())?;
             let stop = client.stop_force().await;
             if stop.is_err() {
                 ipc.abort();

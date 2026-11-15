@@ -1,4 +1,5 @@
 use crate::protocol::ApprovalAttentionOutcome;
+use std::mem;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use windows_sys::Win32::Foundation::GetLastError;
@@ -34,7 +35,7 @@ impl DialogAttention {
                 unsafe { GetForegroundWindow() == hwnd }
             },
             || {
-                let cb_size = u32::try_from(std::mem::size_of::<FLASHWINFO>()).ok()?;
+                let cb_size = u32::try_from(mem::size_of::<FLASHWINFO>()).ok()?;
                 let flash = FLASHWINFO {
                     cbSize: cb_size,
                     hwnd,

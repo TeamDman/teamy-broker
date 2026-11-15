@@ -1,3 +1,7 @@
+use std::mem;
+use std::path::PathBuf;
+use std::ptr;
+use std::slice::from_raw_parts;
 use windows_sys::Win32::Foundation::CloseHandle;
 use windows_sys::Win32::Foundation::LocalFree;
 use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
@@ -13,7 +17,7 @@ use windows_sys::Win32::System::Threading::OpenProcessToken;
 pub fn sid() -> eyre::Result<String> {
     // SAFETY: Windows current-process pseudo-handle requires no close.
     let process = unsafe { GetCurrentProcess() };
-    let mut token = std::ptr::null_mut();
+    let mut token = ptr::null_mut();
     // SAFETY: valid current-process pseudo handle and writable output handle.
     eyre::ensure!(
         // SAFETY: valid current-process pseudo handle and writable output handle.
@@ -23,8 +27,8 @@ pub fn sid() -> eyre::Result<String> {
     let result = (|| {
         let mut needed = 0;
         // SAFETY: size query uses null buffer with zero length.
-        unsafe { GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &raw mut needed) };
-        let mut data = vec![0usize; (needed as usize).div_ceil(std::mem::size_of::<usize>())];
+        unsafe { GetTokenInformation(token, TokenUser, ptr::null_mut(), 0, &raw mut needed) };
+        let mut data = vec![0usize; (needed as usize).div_ceil(mem::size_of::<usize>())];
         // SAFETY: aligned buffer sized by the token information query.
         eyre::ensure!(
             // SAFETY: aligned buffer sized by the token information query.
@@ -41,7 +45,7 @@ pub fn sid() -> eyre::Result<String> {
         );
         // SAFETY: successful TokenUser query returns TOKEN_USER in aligned buffer.
         let user = unsafe { &*data.as_ptr().cast::<TOKEN_USER>() };
-        let mut text = std::ptr::null_mut();
+        let mut text = ptr::null_mut();
         // SAFETY: SID belongs to the live token query buffer, output receives a LocalAlloc string.
         eyre::ensure!(
             // SAFETY: SID belongs to the live token query buffer, output receives a LocalAlloc string.
@@ -60,7 +64,7 @@ pub fn sid() -> eyre::Result<String> {
             len += 1;
         }
         // SAFETY: length was measured within the allocated NUL-terminated string.
-        let value = String::from_utf16(unsafe { std::slice::from_raw_parts(text, len) });
+        let value = String::from_utf16(unsafe { from_raw_parts(text, len) });
         // SAFETY: this allocation was returned by ConvertSidToStringSidW.
         unsafe { LocalFree(text.cast()) };
         Ok(value?)
@@ -82,7 +86,7 @@ pub fn wide(value: &str) -> Vec<u16> {
 /// # Errors
 ///
 /// Returns an error on invalid configuration, expired leases, denial, or failed I/O.
-pub fn lease_root() -> eyre::Result<std::path::PathBuf> {
+pub fn lease_root() -> eyre::Result<PathBuf> {
     let local = directories_next::BaseDirs::new()
         .ok_or_else(|| eyre::eyre!("user directories unavailable"))?;
     Ok(local

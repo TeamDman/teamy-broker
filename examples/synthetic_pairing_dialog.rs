@@ -1,14 +1,20 @@
 //! No listener or live comparison code. Refuses to open UI on the input desktop.
+use std::env;
+use std::io;
+use std::io::Write;
+use std::panic;
+use std::process;
+use teamy_broker::broker::mobile_dummy::pairing_prompt_probe;
 fn main() {
-    std::panic::set_hook(Box::new(|_| {}));
+    panic::set_hook(Box::new(|_| {}));
     if run().is_err() {
-        std::process::exit(1);
+        process::exit(1);
     }
 }
 fn run() -> eyre::Result<()> {
-    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    let args = env::args().skip(1).collect::<Vec<_>>();
     if args.is_empty() {
-        std::io::Write::write_all(&mut std::io::stdout().lock(),b"PROPOSAL ONLY: exact private-desktop synthetic pairing UI probe; no live code, network or authentication.\n")?;
+        Write::write_all(&mut io::stdout().lock(),b"PROPOSAL ONLY: exact private-desktop synthetic pairing UI probe; no live code, network or authentication.\n")?;
         return Ok(());
     }
     eyre::ensure!(
@@ -26,13 +32,11 @@ fn run() -> eyre::Result<()> {
             "cli-cancel" => false,
             _ => eyre::bail!("synthetic resolution mode required"),
         };
-        teamy_broker::broker::mobile_dummy::pairing_prompt_probe::run_confirmation(
-            &args[0], accept,
-        )?
+        pairing_prompt_probe::run_confirmation(&args[0], accept)?
     } else {
-        teamy_broker::broker::mobile_dummy::pairing_prompt_probe::run(&args[0], repaired)?
+        pairing_prompt_probe::run(&args[0], repaired)?
     };
     let json = facet_json::to_string(&report)?;
-    std::io::Write::write_all(&mut std::io::stdout().lock(), json.as_bytes())?;
+    Write::write_all(&mut io::stdout().lock(), json.as_bytes())?;
     Ok(())
 }

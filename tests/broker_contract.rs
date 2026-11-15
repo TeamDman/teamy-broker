@@ -1,3 +1,6 @@
+use std::env;
+use tokio::task;
+use tokio::task::JoinSet;
 mod support;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -28,7 +31,7 @@ async fn multiple_clients_share_only_exact_approved_use_and_fixed_deadline() {
     let approval = Arc::new(FakeApproval::default());
     let storage = Arc::new(FakeStorage::default());
     let e = engine(Arc::clone(&adapter), Arc::clone(&approval), storage);
-    let mut clients = tokio::task::JoinSet::new();
+    let mut clients = JoinSet::new();
     for _ in 0..12 {
         let e = Arc::clone(&e);
         clients.spawn(async move {
@@ -158,7 +161,7 @@ async fn purge_during_approval_cancels_publication() {
         })
     };
     while approval.calls.load(Ordering::SeqCst) == 0 {
-        tokio::task::yield_now().await;
+        task::yield_now().await;
     }
     e.purge(None).await.unwrap();
     let _ = task.await.unwrap().unwrap_err();
@@ -171,7 +174,7 @@ async fn all_explicit_backends_obey_same_approval_and_purge_contract() {
         Backend::Memory,
         Backend::WindowsCredentialManager("teamy-broker/synthetic-test".into()),
         Backend::WellKnownFile(
-            std::env::temp_dir()
+            env::temp_dir()
                 .join("teamy-broker-synthetic-test.bin")
                 .to_string_lossy()
                 .into_owned(),

@@ -1,3 +1,12 @@
+use std::env;
+use std::path::PathBuf;
+use std::process;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+use teamy_broker::protocol::Status;
+#[path = "support/logging_cli.rs"]
+mod logging_cli;
+
 use facet::Facet;
 use std::fs;
 use std::process::Command;
@@ -9,16 +18,16 @@ struct LogLine {
     level: String,
 }
 
-fn scratch() -> std::path::PathBuf {
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    std::env::temp_dir().join(format!(
+fn scratch() -> PathBuf {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    env::temp_dir().join(format!(
         "teamy-log-test-{}-{}-{}",
-        std::process::id(),
+        process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos(),
-        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        NEXT.fetch_add(1, Ordering::Relaxed)
     ))
 }
 
@@ -26,7 +35,7 @@ fn scratch() -> std::path::PathBuf {
 fn independent_defaults_keep_command_lifecycle_in_debug_file() {
     let root = scratch();
     let file = root.join("capture.ndjson");
-    let output = Command::new(env!("CARGO_BIN_EXE_teamy-broker"))
+    let output = logging_cli::command()
         .args([
             "--log-format",
             "ndjson",
@@ -70,11 +79,10 @@ fn independent_defaults_keep_command_lifecycle_in_debug_file() {
     assert!(!stderr.contains("Dispatching command"));
     assert!(!stderr.contains("Command finished"));
     assert!(!file_text.contains('\u{1b}'));
-    assert!(
-        !String::from_utf8(output.stdout)
-            .unwrap()
-            .contains("Task progress")
-    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(!stdout.contains("Task progress"));
+    let status: Status = facet_json::from_str(&stdout).unwrap();
+    assert!(status.running, "isolated status fixture must answer");
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -84,7 +92,7 @@ fn stderr_off_does_not_disable_file_and_existing_files_are_appended() {
     fs::create_dir_all(&root).unwrap();
     let file = root.join("capture.log");
     fs::write(&file, "prior record\n").unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_teamy-broker"))
+    let output = logging_cli::command()
         .args([
             "--log-filter",
             "off",
@@ -98,6 +106,9 @@ fn stderr_off_does_not_disable_file_and_existing_files_are_appended() {
         .unwrap();
     assert!(output.status.success());
     assert!(output.stderr.is_empty());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let status: Status = facet_json::from_str(&stdout).unwrap();
+    assert!(status.running, "isolated status fixture must answer");
     let text = fs::read_to_string(&file).unwrap();
     assert!(text.starts_with("prior record\n"));
     assert!(text.contains("Tracing initialized"));
@@ -169,4 +180,33 @@ fn text_parse_failure_cannot_echo_sensitive_arguments() {
             .unwrap()
             .contains("SYNTHETIC_SECRET")
     );
+}
+
+#[test]
+fn builtins_do_not_validate_filters_or_create_log_directories() {
+    let root = scratch();
+    let file = root.join("must-not-exist").join("capture.ndjson");
+    for builtin in [
+        ["--help"].as_slice(),
+        ["--version"].as_slice(),
+        ["phone-pair-confirm", "--help"].as_slice(),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_teamy-broker"))
+            .args([
+                "--log-format",
+                "ndjson",
+                "--log-filter",
+                "fixture=bogus",
+                "--log-file",
+            ])
+            .arg(&file)
+            .args(builtin)
+            .env("RUST_LOG", "fixture=bogus")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "builtin failed: {builtin:?}");
+        assert!(!output.stdout.is_empty());
+        assert!(output.stderr.is_empty(), "builtins must not start logging");
+        assert!(!root.exists(), "builtins must not create log directories");
+    }
 }

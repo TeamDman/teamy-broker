@@ -1,4 +1,6 @@
 use facet::Facet;
+use std::fmt;
+use std::path::Path;
 /// Exactly one storage choice. Persistent locations are explicitly consumer-selected.
 #[derive(Facet, Clone, PartialEq, Eq)]
 #[repr(u8)]
@@ -7,8 +9,8 @@ pub enum Backend {
     WindowsCredentialManager(String),
     WellKnownFile(String),
 }
-impl std::fmt::Debug for Backend {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for Backend {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::Memory => "Memory",
             Self::WindowsCredentialManager(_) => "WindowsCredentialManager([redacted])",
@@ -33,7 +35,7 @@ impl Backend {
                 Ok(())
             }
             Self::WellKnownFile(path) => {
-                let p = std::path::Path::new(path);
+                let p = Path::new(path);
                 eyre::ensure!(
                     p.is_absolute()
                         && p.file_name().is_some()

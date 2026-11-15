@@ -1,17 +1,21 @@
 use super::java_pairing_worker::JavaPairingWorker;
+use crate::protocol::wire;
 use std::path::Path;
+use std::str;
 use std::time::Duration;
 use teamy_broker_handoff::pairing_binding::PairingBinding;
 use teamy_broker_handoff::queue::Queue;
 use teamy_broker_handoff::session::Session;
+use teamy_broker_handoff::wire as teamy_broker_handoff_wire;
+use tokio::time::Instant;
 use zeroize::Zeroizing;
 #[tokio::test]
 async fn rust_private_pipe_java_phone_roundtrip_bound_dummy_queue_and_restart() -> eyre::Result<()>
 {
-    let java = crate::broker::mobile_dummy::java_pairing_worker::configured_java()?;
+    let java = super::JavaExecutablePath::for_tests()?.into_path_buf();
     let artifacts = Path::new(env!("CARGO_MANIFEST_DIR")).join("pairing/java");
-    let binding = PairingBinding::dummy(crate::protocol::wire::unix_ms()?)?;
-    let until = tokio::time::Instant::now() + Duration::from_secs(20);
+    let binding = PairingBinding::dummy(wire::unix_ms()?)?;
+    let until = Instant::now() + Duration::from_secs(20);
     let mut desktop = JavaPairingWorker::start(&java, &artifacts, &binding, until).await?;
     let mut phone = JavaPairingWorker::start_test_phone(&java, &artifacts, &binding, until).await?;
     let initial = phone.call(2, &[]).await?;
@@ -64,10 +68,10 @@ async fn rust_private_pipe_java_phone_roundtrip_bound_dummy_queue_and_restart() 
     let key = session.bootstrap();
     let ciphertext = desktop.call(6, key.as_bytes()).await?;
     let received = phone.call(7, &ciphertext).await?;
-    let received = std::str::from_utf8(&received)?;
+    let received = str::from_utf8(&received)?;
     let client = Session::from_bootstrap(received)?;
     let queue = Queue::new(session);
-    let challenge = teamy_broker_handoff::wire::random::<32>()?;
+    let challenge = teamy_broker_handoff_wire::random::<32>()?;
     let poll = client.seal(teamy_broker_handoff::POLL_AAD, &challenge)?;
     let packet = super::packet::Packet {
         operation: "poll".into(),
@@ -76,12 +80,12 @@ async fn rust_private_pipe_java_phone_roundtrip_bound_dummy_queue_and_restart() 
     let packet = Zeroizing::new(facet_json::to_string(&packet)?);
     let ciphertext = phone.call(6, packet.as_bytes()).await?;
     let decoded = desktop.call(7, &ciphertext).await?;
-    let packet: super::packet::Packet = facet_json::from_str(std::str::from_utf8(&decoded)?)?;
+    let packet: super::packet::Packet = facet_json::from_str(str::from_utf8(&decoded)?)?;
     let response = queue.poll(&packet.envelope)?;
     let response = Zeroizing::new(facet_json::to_string(&response)?);
     let ciphertext = desktop.call(6, response.as_bytes()).await?;
     let decoded = phone.call(7, &ciphertext).await?;
-    let envelope = facet_json::from_str(std::str::from_utf8(&decoded)?)?;
+    let envelope = facet_json::from_str(str::from_utf8(&decoded)?)?;
     let plain = client.open(&challenge, &envelope)?;
     eyre::ensure!(plain.as_slice() == b"[]", "test poll mismatch");
     // Replay fails closed at the established library's directional sequence/MAC layer.

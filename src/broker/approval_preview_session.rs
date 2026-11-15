@@ -1,12 +1,16 @@
 use super::cancel_guard::CancelGuard;
 use super::engine::Engine;
+use crate::protocol::APPROVAL_PREVIEW_CAPABILITY;
+use crate::protocol::FailureKind;
 use crate::protocol::Hello;
 use crate::protocol::Response;
+use crate::protocol::wire;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
 use tokio::net::windows::named_pipe::NamedPipeServer;
+use tokio::time;
 pub(super) async fn execute(
     pipe: &mut NamedPipeServer,
     engine: &Engine,
@@ -15,7 +19,7 @@ pub(super) async fn execute(
     eyre::ensure!(
         peer.capabilities
             .iter()
-            .any(|cap| cap == crate::protocol::APPROVAL_PREVIEW_CAPABILITY),
+            .any(|cap| cap == APPROVAL_PREVIEW_CAPABILITY),
         "preview capability not negotiated"
     );
     let pid = super::server::peer_pid(pipe)?;
@@ -23,20 +27,20 @@ pub(super) async fn execute(
     let _guard = CancelGuard(Arc::clone(&cancel));
     let preview = engine.approval_preview(pid, cancel);
     let result = tokio::select! {result=preview=>result,_=pipe.read_u8()=>return Ok(())};
-    tokio::time::timeout(Duration::from_secs(5), async {
+    time::timeout(Duration::from_secs(5), async {
         match result {
             Ok(result) => {
-                crate::protocol::wire::write(pipe, &Response::code("preview-complete")).await?;
-                crate::protocol::wire::write(pipe, &result).await
+                wire::write(pipe, &Response::code("preview-complete")).await?;
+                wire::write(pipe, &result).await
             }
             Err(error) => {
-                crate::protocol::wire::write(
+                wire::write(
                     pipe,
                     &Response::failure(
                         error
-                            .downcast_ref::<crate::protocol::FailureKind>()
+                            .downcast_ref::<FailureKind>()
                             .copied()
-                            .unwrap_or(crate::protocol::FailureKind::ApprovalUnavailable),
+                            .unwrap_or(FailureKind::ApprovalUnavailable),
                     ),
                 )
                 .await

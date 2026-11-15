@@ -1,17 +1,15 @@
+use crate::broker::shared_preview::SharedPreview;
+use std::sync::atomic::Ordering;
 use windows_sys::Win32::Foundation::HWND;
+use windows_sys::Win32::UI::Controls::TDE_MAIN_INSTRUCTION;
+use windows_sys::Win32::UI::Controls::TDM_SET_ELEMENT_TEXT;
 use windows_sys::Win32::UI::WindowsAndMessaging::SendMessageW;
-pub(crate) fn update(hwnd: HWND, shared: &crate::broker::shared_preview::SharedPreview) {
+pub(crate) fn update(hwnd: HWND, shared: &SharedPreview) {
     let instruction = super::identity::wide(if shared.synthetic_fixture() {
         "ISOLATED TEST: enter only teamy-fixture-input-v1; fixture provider never reads a vault"
-    } else if shared
-        .provider_failed
-        .load(std::sync::atomic::Ordering::Acquire)
-    {
+    } else if shared.provider_failed.load(Ordering::Acquire) {
         "Desktop read failed. You can still supply or deny."
-    } else if shared
-        .provider_requested
-        .load(std::sync::atomic::Ordering::Acquire)
-    {
+    } else if shared.provider_requested.load(Ordering::Acquire) {
         "Desktop 1Password is waiting. Supply remains available."
     } else {
         "Choose how to provide this exact credential"
@@ -20,10 +18,8 @@ pub(crate) fn update(hwnd: HWND, shared: &crate::broker::shared_preview::SharedP
     unsafe {
         SendMessageW(
             hwnd,
-            u32::try_from(windows_sys::Win32::UI::Controls::TDM_SET_ELEMENT_TEXT)
-                .expect("message constant"),
-            usize::try_from(windows_sys::Win32::UI::Controls::TDE_MAIN_INSTRUCTION)
-                .expect("instruction constant"),
+            u32::try_from(TDM_SET_ELEMENT_TEXT).expect("message constant"),
+            usize::try_from(TDE_MAIN_INSTRUCTION).expect("instruction constant"),
             instruction.as_ptr() as isize,
         )
     };

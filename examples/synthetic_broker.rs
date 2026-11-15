@@ -1,4 +1,7 @@
 //! Synthetic foreground helper: injected approval and fake adapter, never invokes op or persists credentials.
+use std::env;
+use std::time::Duration;
+use tokio::time;
 #[path = "../tests/support/fake_adapter.rs"]
 mod fake_adapter;
 #[path = "../tests/support/fake_approval.rs"]
@@ -10,7 +13,7 @@ use teamy_broker::broker::engine::Engine;
 use teamy_broker::broker::server::serve_at;
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
-    let args: Vec<_> = std::env::args().skip(1).collect();
+    let args: Vec<_> = env::args().skip(1).collect();
     eyre::ensure!(
         args.len() == 3 && args[0] == "--synthetic-test-only" && args[1] == "--endpoint",
         "synthetic helper requires explicit test endpoint"
@@ -27,7 +30,7 @@ async fn main() -> eyre::Result<()> {
     let cancel = teamy_cancellation::CancellationToken::new();
     let deadline = cancel.clone();
     tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        time::sleep(Duration::from_secs(30)).await;
         deadline.request_cancel("synthetic helper deadline");
     });
     serve_at(engine, cancel, &args[2], false).await

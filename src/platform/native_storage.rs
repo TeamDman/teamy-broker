@@ -1,11 +1,19 @@
 use super::dpapi::protect;
 use crate::protocol::Backend;
+use std::fs::OpenOptions;
+use std::fs::remove_file;
+use std::io;
 use std::io::Write;
+use std::path::Path;
+use windows_sys::Win32::Foundation::GetLastError;
 use windows_sys::Win32::Security::Credentials::CRED_PERSIST_LOCAL_MACHINE;
 use windows_sys::Win32::Security::Credentials::CRED_TYPE_GENERIC;
 use windows_sys::Win32::Security::Credentials::CREDENTIALW;
 use windows_sys::Win32::Security::Credentials::CredDeleteW;
 use windows_sys::Win32::Security::Credentials::CredWriteW;
+use windows_sys::Win32::Storage::FileSystem::MOVEFILE_REPLACE_EXISTING;
+use windows_sys::Win32::Storage::FileSystem::MOVEFILE_WRITE_THROUGH;
+use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
 /// # Errors
 ///
 /// Returns an error on invalid configuration, expired leases, denial, or failed I/O.
@@ -33,14 +41,14 @@ pub fn write(backend: &Backend, data: &[u8]) -> eyre::Result<()> {
         }
         Backend::WellKnownFile(path) => {
             let encrypted = protect(data, false)?;
-            let p = std::path::Path::new(path);
+            let p = Path::new(path);
             let parent = p
                 .parent()
                 .ok_or_else(|| eyre::eyre!("cache parent missing"))?;
             eyre::ensure!(parent.is_dir(), "explicit cache parent must already exist");
             let temp = parent.join(format!(".teamy-broker-{}.tmp", uuid::Uuid::new_v4()));
             let result = (|| {
-                let mut file = std::fs::OpenOptions::new()
+                let mut file = OpenOptions::new()
                     .write(true)
                     .create_new(true)
                     .open(&temp)?;
@@ -53,18 +61,17 @@ pub fn write(backend: &Backend, data: &[u8]) -> eyre::Result<()> {
                 eyre::ensure!(
                     // SAFETY: live NUL-terminated file paths; atomic replacement on the same volume.
                     unsafe {
-                        windows_sys::Win32::Storage::FileSystem::MoveFileExW(
+                        MoveFileExW(
                             source.as_ptr(),
                             destination.as_ptr(),
-                            windows_sys::Win32::Storage::FileSystem::MOVEFILE_REPLACE_EXISTING
-                                | windows_sys::Win32::Storage::FileSystem::MOVEFILE_WRITE_THROUGH,
+                            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
                         )
                     } != 0,
                     "cache publish failed"
                 );
                 Ok(())
             })();
-            let _ = std::fs::remove_file(&temp);
+            let _ = remove_file(&temp);
             result
         }
     }
@@ -75,9 +82,9 @@ pub fn write(backend: &Backend, data: &[u8]) -> eyre::Result<()> {
 pub fn delete(backend: &Backend) -> eyre::Result<()> {
     match backend {
         Backend::Memory => Ok(()),
-        Backend::WellKnownFile(path) => match std::fs::remove_file(path) {
+        Backend::WellKnownFile(path) => match remove_file(path) {
             Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(_) => eyre::bail!("cache removal failed"),
         },
         Backend::WindowsCredentialManager(target) => {
@@ -87,7 +94,7 @@ pub fn delete(backend: &Backend) -> eyre::Result<()> {
                 // SAFETY: inspect error immediately following the failing Win32 call.
                 eyre::ensure!(
                     // SAFETY: inspect error immediately following the failing Win32 call.
-                    unsafe { windows_sys::Win32::Foundation::GetLastError() } == 1168,
+                    unsafe { GetLastError() } == 1168,
                     "credential removal failed"
                 );
             }

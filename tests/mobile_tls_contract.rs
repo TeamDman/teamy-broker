@@ -1,48 +1,65 @@
+use rustls::crypto::ring;
+use rustls::pki_types::CertificateDer;
+use rustls::pki_types::ServerName;
+use std::env;
+use std::net::Ipv4Addr;
+use std::net::SocketAddr;
+use std::process;
+use std::str;
 use std::sync::Arc;
 use std::time::Duration;
+use teamy_broker::broker::engine::Engine;
+use teamy_broker::broker::mobile_dummy::phone_profile::PhoneProfile;
+use teamy_broker::broker::mobile_dummy::tailnet_peer::PORT;
 use teamy_broker::broker::mobile_dummy::tailnet_peer::TailnetPeer;
 use teamy_broker::broker::mobile_dummy::tls_identity::TlsIdentity;
 use teamy_broker::broker::mobile_dummy::{self};
+use teamy_broker::broker::server;
+use teamy_broker::paths::AppHome;
+use teamy_broker::protocol::wire;
+use teamy_broker::sdk::Client;
 use teamy_broker_handoff::binding::Binding;
 use teamy_broker_handoff::envelope::Envelope;
+use teamy_broker_handoff::pending::Pending;
 use teamy_broker_handoff::queue::Queue;
 use teamy_broker_handoff::session::Session;
+use teamy_broker_handoff::wire as teamy_broker_handoff_wire;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
-fn connector(cert: rustls::pki_types::CertificateDer<'static>) -> tokio_rustls::TlsConnector {
+use tokio::net::TcpListener;
+use tokio::net::TcpStream;
+use tokio::task;
+use tokio::time;
+use tokio::time::Instant;
+fn connector(cert: CertificateDer<'static>) -> tokio_rustls::TlsConnector {
     let mut roots = rustls::RootCertStore::empty();
     roots.add(cert).unwrap();
-    let config = rustls::ClientConfig::builder_with_provider(Arc::new(
-        rustls::crypto::ring::default_provider(),
-    ))
-    .with_safe_default_protocol_versions()
-    .unwrap()
-    .with_root_certificates(roots)
-    .with_no_client_auth();
+    let config = rustls::ClientConfig::builder_with_provider(Arc::new(ring::default_provider()))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
     tokio_rustls::TlsConnector::from(Arc::new(config))
 }
 async fn tls_exchange(
-    address: std::net::SocketAddr,
+    address: SocketAddr,
     connector: &tokio_rustls::TlsConnector,
     packet: &mobile_dummy::packet::Packet,
 ) -> eyre::Result<Envelope> {
-    let tcp = tokio::net::TcpStream::connect(address).await?;
+    let tcp = TcpStream::connect(address).await?;
     let mut tls = connector
-        .connect(
-            rustls::pki_types::ServerName::IpAddress(std::net::Ipv4Addr::LOCALHOST.into()),
-            tcp,
-        )
+        .connect(ServerName::IpAddress(Ipv4Addr::LOCALHOST.into()), tcp)
         .await?;
-    teamy_broker::protocol::wire::write(&mut tls, packet).await?;
+    wire::write(&mut tls, packet).await?;
     tls.flush().await?;
-    teamy_broker::protocol::wire::read(&mut tls).await
+    wire::read(&mut tls).await
 }
 #[tokio::test]
 async fn tls_poll_submit_completes_existing_sdk_consumer_and_rejects_replay() {
     let session = Session::random().unwrap();
     let phone = Session::from_bootstrap(&session.bootstrap()).unwrap();
     let queue = Arc::new(Queue::new(session));
-    let engine = Arc::new(teamy_broker::broker::engine::Engine::new(
+    let engine = Arc::new(Engine::new(
         Arc::new(mobile_dummy::adapter::MobileDummyAdapter),
         Arc::new(mobile_dummy::approval::MobileDummyApproval {
             queue: Arc::clone(&queue),
@@ -52,7 +69,7 @@ async fn tls_poll_submit_completes_existing_sdk_consumer_and_rejects_replay() {
     let endpoint = format!(r"\\.\pipe\teamy-broker-tls-test-{}", uuid::Uuid::new_v4());
     let server_endpoint = endpoint.clone();
     let ipc = tokio::spawn(async move {
-        teamy_broker::broker::server::serve_at(
+        server::serve_at(
             engine,
             teamy_cancellation::CancellationToken::new(),
             &server_endpoint,
@@ -60,22 +77,20 @@ async fn tls_poll_submit_completes_existing_sdk_consumer_and_rejects_replay() {
         )
         .await
     });
-    let client = teamy_broker::sdk::Client::new(None)
+    let client = Client::new(None)
         .unwrap()
         .with_endpoint(endpoint)
         .with_deadlines(Duration::from_secs(2), Duration::from_secs(4));
-    tokio::time::timeout(Duration::from_secs(3), async {
+    time::timeout(Duration::from_secs(3), async {
         while !client.status().await.unwrap().running {
-            tokio::task::yield_now().await;
+            task::yield_now().await;
         }
     })
     .await
     .unwrap();
     let identity = TlsIdentity::random().unwrap();
     let connector = connector(identity.certificate);
-    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-        .await
-        .unwrap();
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(mobile_dummy::tls_server::serve(
         listener,
@@ -85,28 +100,28 @@ async fn tls_poll_submit_completes_existing_sdk_consumer_and_rejects_replay() {
     ));
     let consumer = client.clone();
     let waiting = tokio::spawn(async move { consumer.acquire(mobile_dummy::request()).await });
-    let challenge = teamy_broker_handoff::wire::random::<32>().unwrap();
+    let challenge = teamy_broker_handoff_wire::random::<32>().unwrap();
     let poll = mobile_dummy::packet::Packet {
         operation: "poll".into(),
         envelope: phone
             .seal(teamy_broker_handoff::POLL_AAD, &challenge)
             .unwrap(),
     };
-    let binding = tokio::time::timeout(Duration::from_secs(2), async {
+    let binding = time::timeout(Duration::from_secs(2), async {
         loop {
             let reply = tls_exchange(address, &connector, &poll).await.unwrap();
             let plain = phone.open(&challenge, &reply).unwrap();
-            let pending: Vec<teamy_broker_handoff::pending::Pending> =
-                facet_json::from_str(std::str::from_utf8(&plain).unwrap()).unwrap();
+            let pending: Vec<Pending> =
+                facet_json::from_str(str::from_utf8(&plain).unwrap()).unwrap();
             if let Some(first) = pending.first() {
                 break facet_json::from_str::<Binding>(&first.binding).unwrap();
             }
-            tokio::task::yield_now().await;
+            task::yield_now().await;
         }
     })
     .await
     .unwrap();
-    assert_eq!(binding.consumer_pid, std::process::id());
+    assert_eq!(binding.consumer_pid, process::id());
     let exact = binding.encode().unwrap();
     let mut plain = vec![1];
     plain.extend(teamy_broker_handoff::DUMMY_SECRET);
@@ -145,13 +160,11 @@ async fn wrong_certificate_hostname_session_plaintext_and_frames_fail_closed() {
     let identity = TlsIdentity::random().unwrap();
     let valid = connector(identity.certificate.clone());
     let wrong = connector(TlsIdentity::random().unwrap().certificate);
-    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-        .await
-        .unwrap();
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
     let address = listener.local_addr().unwrap();
     let session = Session::random().unwrap();
     let queue = Arc::new(Queue::new(session));
-    let binding = Binding::dummy(42, teamy_broker::protocol::wire::unix_ms().unwrap()).unwrap();
+    let binding = Binding::dummy(42, wire::unix_ms().unwrap()).unwrap();
     let (id, _receiver) = queue.enqueue(binding).unwrap();
     let server = tokio::spawn(mobile_dummy::tls_server::serve(
         listener,
@@ -159,21 +172,15 @@ async fn wrong_certificate_hostname_session_plaintext_and_frames_fail_closed() {
         identity.acceptor,
         Duration::from_secs(10),
     ));
-    let tcp = tokio::net::TcpStream::connect(address).await.unwrap();
+    let tcp = TcpStream::connect(address).await.unwrap();
     let _ = wrong
-        .connect(
-            rustls::pki_types::ServerName::IpAddress(std::net::Ipv4Addr::LOCALHOST.into()),
-            tcp,
-        )
+        .connect(ServerName::IpAddress(Ipv4Addr::LOCALHOST.into()), tcp)
         .await
         .map(|_| ())
         .unwrap_err();
-    let tcp = tokio::net::TcpStream::connect(address).await.unwrap();
+    let tcp = TcpStream::connect(address).await.unwrap();
     let _ = valid
-        .connect(
-            rustls::pki_types::ServerName::try_from("wrong.invalid").unwrap(),
-            tcp,
-        )
+        .connect(ServerName::try_from("wrong.invalid").unwrap(), tcp)
         .await
         .map(|_| ())
         .unwrap_err();
@@ -183,18 +190,15 @@ async fn wrong_certificate_hostname_session_plaintext_and_frames_fail_closed() {
         envelope: bad.seal(teamy_broker_handoff::POLL_AAD, &[0; 32]).unwrap(),
     };
     let _ = tls_exchange(address, &valid, &packet).await.unwrap_err();
-    let mut plaintext = tokio::net::TcpStream::connect(address).await.unwrap();
+    let mut plaintext = TcpStream::connect(address).await.unwrap();
     plaintext.write_all(b"invalid plaintext").await.unwrap();
     plaintext.shutdown().await.unwrap();
     let mut result = [0; 64];
     let count = plaintext.read(&mut result).await.unwrap_or(0);
     assert!(count == 0 || result[0] == 21);
-    let tcp = tokio::net::TcpStream::connect(address).await.unwrap();
+    let tcp = TcpStream::connect(address).await.unwrap();
     let mut tls = valid
-        .connect(
-            rustls::pki_types::ServerName::IpAddress(std::net::Ipv4Addr::LOCALHOST.into()),
-            tcp,
-        )
+        .connect(ServerName::IpAddress(Ipv4Addr::LOCALHOST.into()), tcp)
         .await
         .unwrap();
     tls.write_u32(16385).await.unwrap();
@@ -205,58 +209,57 @@ async fn wrong_certificate_hostname_session_plaintext_and_frames_fail_closed() {
 }
 #[test]
 fn peer_policy_rejects_other_nodes_and_binds_outside_the_approved_scope() {
-    use teamy_broker_handoff::phone_config::DESKTOP;
-    use teamy_broker_handoff::phone_config::PHONE;
-    use teamy_broker_handoff::phone_config::PHONE_NAME;
-    use teamy_broker_handoff::phone_config::PHONE_NODE;
-    use teamy_broker_handoff::phone_config::PORT;
-    use teamy_broker_handoff::phone_config::USER;
-    assert!(TailnetPeer::permits_bind((DESKTOP, PORT).into()));
-    for address in [
-        "0.0.0.0:43188".parse().unwrap(),
-        (DESKTOP, 443).into(),
-        "127.0.0.1:43188".parse().unwrap(),
-        "[::]:43188".parse().unwrap(),
-    ] {
-        assert!(!TailnetPeer::permits_bind(address));
-    }
-    assert!(TailnetPeer::permits_source((PHONE, 12345).into()));
-    for source in ["127.0.0.1:12345", "192.0.2.200:12345", "[::1]:12345"] {
-        assert!(!TailnetPeer::permits_source(source.parse().unwrap()));
-    }
+    let profile = PhoneProfile {
+        desktop: "100.64.0.1".parse().unwrap(),
+        phone: "100.64.0.2".parse().unwrap(),
+        desktop_node: "desktop-test".to_owned().try_into().unwrap(),
+        phone_node: "phone-test".to_owned().try_into().unwrap(),
+        user: 42.try_into().unwrap(),
+        phone_name: "phone.invalid.".to_owned().try_into().unwrap(),
+        java: env::temp_dir().join("synthetic-java").try_into().unwrap(),
+    };
+    assert!(TailnetPeer::permits_bind_for(
+        (profile.desktop.get(), PORT).into(),
+        &profile
+    ));
+    assert!(!TailnetPeer::permits_bind_for(
+        (profile.desktop.get(), 443).into(),
+        &profile
+    ));
+    assert!(TailnetPeer::permits_source_for(
+        (profile.phone.get(), 12345).into(),
+        &profile
+    ));
+    assert!(!TailnetPeer::permits_source_for(
+        (profile.desktop.get(), 12345).into(),
+        &profile
+    ));
     let fixture = format!(
-        r#"{{"Node":{{"StableID":"{PHONE_NODE}","Name":"{PHONE_NAME}","User":{USER},"KeyExpiry":"2099-01-01T00:00:00Z","Addresses":["{PHONE}/32"],"Hostinfo":{{"OS":"android"}}}},"UnusedField":true}}"#
+        r#"{{"Node":{{"StableID":"{}","Name":"{}","User":{},"KeyExpiry":"2099-01-01T00:00:00Z","Addresses":["{}/32"],"Hostinfo":{{"OS":"android"}}}}}}"#,
+        profile.phone_node.as_str(),
+        profile.phone_name.as_str(),
+        profile.user.get(),
+        profile.phone.get()
     );
-    TailnetPeer::validate_whois(&fixture).unwrap();
+    TailnetPeer::validate_whois(&fixture, &profile).unwrap();
     for (before, after) in [
-        (
-            format!(r#""StableID":"{PHONE_NODE}""#),
-            r#""StableID":"other-node""#.into(),
-        ),
-        (
-            format!(r#""User":{USER}"#),
-            format!(r#""User":{}"#, USER.saturating_add(1)),
-        ),
-        (r#""OS":"android""#.into(), r#""OS":"windows""#.into()),
-        (format!("{PHONE}/32"), "127.0.0.1/32".into()),
-        ("2099-01-01".into(), "2000-01-01".into()),
+        ("phone-test", "other-node"),
+        ("android", "windows"),
+        ("2099-01-01", "2000-01-01"),
     ] {
-        assert!(TailnetPeer::validate_whois(&fixture.replace(&before, &after)).is_err());
+        assert!(TailnetPeer::validate_whois(&fixture.replace(before, after), &profile).is_err());
     }
 }
-#[tokio::test]
-async fn unconfigured_phone_scope_rejects_activation() {
-    if !teamy_broker_handoff::phone_config::CONFIGURED {
-        assert!(TailnetPeer::verify_desktop().await.is_err());
-    }
+#[test]
+fn missing_phone_profile_is_rejected() {
+    let path = env::temp_dir().join(format!("teamy-profile-missing-{}", uuid::Uuid::new_v4()));
+    let _ = PhoneProfile::load(&AppHome(path)).unwrap_err();
 }
 #[tokio::test]
 async fn finite_tls_listener_closes_stalled_handshakes_and_rejects_unbounded_lifetime() {
     let identity = TlsIdentity::random().unwrap();
     let queue = Arc::new(Queue::new(Session::random().unwrap()));
-    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-        .await
-        .unwrap();
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
     let address = listener.local_addr().unwrap();
     let task = tokio::spawn(mobile_dummy::tls_server::serve(
         listener,
@@ -264,8 +267,8 @@ async fn finite_tls_listener_closes_stalled_handshakes_and_rejects_unbounded_lif
         identity.acceptor.clone(),
         Duration::from_millis(50),
     ));
-    let mut stalled = tokio::net::TcpStream::connect(address).await.unwrap();
-    tokio::time::timeout(Duration::from_secs(1), task)
+    let mut stalled = TcpStream::connect(address).await.unwrap();
+    time::timeout(Duration::from_secs(1), task)
         .await
         .unwrap()
         .unwrap()
@@ -273,9 +276,7 @@ async fn finite_tls_listener_closes_stalled_handshakes_and_rejects_unbounded_lif
     let mut byte = [0; 1];
     assert_eq!(stalled.read(&mut byte).await.unwrap_or(0), 0);
     for lifetime in [Duration::ZERO, Duration::from_secs(301)] {
-        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-            .await
-            .unwrap();
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
         assert!(
             mobile_dummy::tls_server::serve(
                 listener,
@@ -287,28 +288,24 @@ async fn finite_tls_listener_closes_stalled_handshakes_and_rejects_unbounded_lif
             .is_err()
         );
     }
-    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-        .await
-        .unwrap();
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
     assert!(
         mobile_dummy::tls_server::serve_until(
             listener,
             Arc::clone(&queue),
             identity.acceptor.clone(),
-            tokio::time::Instant::now() - Duration::from_millis(1)
+            Instant::now() - Duration::from_millis(1)
         )
         .await
         .is_err()
     );
-    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-        .await
-        .unwrap();
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
     assert!(
         mobile_dummy::tls_server::serve_until(
             listener,
             queue,
             identity.acceptor,
-            tokio::time::Instant::now() + Duration::from_secs(301)
+            Instant::now() + Duration::from_secs(301)
         )
         .await
         .is_err()

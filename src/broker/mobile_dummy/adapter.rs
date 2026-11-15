@@ -1,10 +1,13 @@
 use crate::broker::adapter::Adapter;
 use crate::broker::adapter::SecretRead;
 use crate::protocol::AcquireRequest;
+use std::fmt::Debug;
+use std::fmt::Formatter;
+use std::fmt::Result as FmtResult;
 use zeroize::Zeroizing;
 pub struct MobileDummyAdapter;
-impl std::fmt::Debug for MobileDummyAdapter {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Debug for MobileDummyAdapter {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         f.write_str("MobileDummyAdapter([redacted])")
     }
 }

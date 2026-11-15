@@ -1,3 +1,13 @@
+use std::env;
+use std::fs;
+use std::sync::Arc;
+use std::time::Instant;
+use teamy_broker::broker::engine::Engine;
+use teamy_broker::broker::native_storage::NativeStorage;
+use teamy_broker::broker::server::serve_at;
+use teamy_broker::protocol::wire;
+use teamy_broker::sdk::Client;
+use tokio::task;
 #[path = "support/fake_adapter.rs"]
 mod fake_adapter;
 #[path = "support/fake_approval.rs"]
@@ -22,8 +32,8 @@ fn lease(backend: Backend) -> Lease {
             backend,
         },
         Zeroizing::new(b"SYNTHETIC_SECRET_NEVER_LOG".to_vec()),
-        teamy_broker::protocol::wire::unix_ms().unwrap(),
-        std::time::Instant::now(),
+        wire::unix_ms().unwrap(),
+        Instant::now(),
     )
     .unwrap()
 }
@@ -32,9 +42,9 @@ fn lease(backend: Backend) -> Lease {
 fn isolated_native_backends_register_before_publish_and_generation_cleanup_preserves_replacement() {
     for file_backend in [true, false] {
         let namespace = uuid::Uuid::new_v4().to_string();
-        let directory = std::env::temp_dir().join(format!("teamy-broker-native-{namespace}"));
+        let directory = env::temp_dir().join(format!("teamy-broker-native-{namespace}"));
         let (backend, dir) = if file_backend {
-            std::fs::create_dir(&directory).unwrap();
+            fs::create_dir(&directory).unwrap();
             (
                 Backend::WellKnownFile(
                     directory
@@ -69,7 +79,7 @@ fn isolated_native_backends_register_before_publish_and_generation_cleanup_prese
         );
         if let Backend::WellKnownFile(path) = &backend {
             assert!(
-                !std::fs::read(path)
+                !fs::read(path)
                     .unwrap()
                     .windows(b"SYNTHETIC_SECRET".len())
                     .any(|part| part == b"SYNTHETIC_SECRET")
@@ -93,10 +103,10 @@ fn isolated_native_backends_register_before_publish_and_generation_cleanup_prese
 #[ignore = "Requires explicit reviewed synthetic scheduled-task execution"]
 fn failed_native_publish_removes_its_task_and_preserves_foreign_destination() {
     let namespace = uuid::Uuid::new_v4().to_string();
-    let directory = std::env::temp_dir().join(format!("teamy-broker-native-{namespace}"));
-    std::fs::create_dir(&directory).unwrap();
+    let directory = env::temp_dir().join(format!("teamy-broker-native-{namespace}"));
+    fs::create_dir(&directory).unwrap();
     let path = directory.join("synthetic.dpapi");
-    std::fs::write(&path, b"synthetic foreign file").unwrap();
+    fs::write(&path, b"synthetic foreign file").unwrap();
     let backend = Backend::WellKnownFile(path.to_string_lossy().into_owned());
     let item = lease(backend.clone());
     let guard = native_guard::NativeGuard {
@@ -105,9 +115,9 @@ fn failed_native_publish_removes_its_task_and_preserves_foreign_destination() {
         directory: Some(directory),
     };
     assert!(persistence::publish(&item).is_err());
-    assert_eq!(std::fs::read(&path).unwrap(), b"synthetic foreign file");
+    assert_eq!(fs::read(&path).unwrap(), b"synthetic foreign file");
     assert!(!scheduler::exists(&item.id).unwrap());
-    std::fs::remove_file(path).unwrap();
+    fs::remove_file(path).unwrap();
     drop(guard);
     let target =
         Backend::WindowsCredentialManager(format!("teamy-broker/synthetic-test/{namespace}"));
@@ -127,17 +137,11 @@ fn failed_native_publish_removes_its_task_and_preserves_foreign_destination() {
 #[tokio::test]
 #[ignore = "Requires explicit reviewed synthetic credentials and scheduled tasks"]
 async fn sdk_persistent_reads_fail_closed_after_purge_and_restart() {
-    use std::sync::Arc;
-    use teamy_broker::broker::engine::Engine;
-    use teamy_broker::broker::native_storage::NativeStorage;
-    use teamy_broker::broker::server::serve_at;
-    use teamy_broker::sdk::Client;
-
     for file_backend in [true, false] {
         let namespace = uuid::Uuid::new_v4().to_string();
-        let directory = std::env::temp_dir().join(format!("teamy-broker-native-{namespace}"));
+        let directory = env::temp_dir().join(format!("teamy-broker-native-{namespace}"));
         let (backend, dir) = if file_backend {
-            std::fs::create_dir(&directory).unwrap();
+            fs::create_dir(&directory).unwrap();
             (
                 Backend::WellKnownFile(
                     directory
@@ -168,7 +172,7 @@ async fn sdk_persistent_reads_fail_closed_after_purge_and_restart() {
         };
         let client = Client::new(None).unwrap().with_endpoint(endpoint.clone());
         while !client.status().await.unwrap().running {
-            tokio::task::yield_now().await;
+            task::yield_now().await;
         }
         let item = lease(backend.clone());
         let secret = client.acquire(item.request).await.unwrap();
@@ -210,15 +214,11 @@ async fn sdk_persistent_reads_fail_closed_after_purge_and_restart() {
 }
 
 async fn assert_restarted_rejects(
-    client: &teamy_broker::sdk::Client,
+    client: &Client,
     endpoint: String,
     backend: Backend,
     lease_id: String,
 ) {
-    use std::sync::Arc;
-    use teamy_broker::broker::engine::Engine;
-    use teamy_broker::broker::native_storage::NativeStorage;
-    use teamy_broker::broker::server::serve_at;
     let restarted = Arc::new(Engine::new(
         Arc::new(fake_adapter::FakeAdapter::default()),
         Arc::new(fake_approval::FakeApproval::default()),
@@ -234,7 +234,7 @@ async fn assert_restarted_rejects(
         .await
     });
     while !client.status().await.unwrap().running {
-        tokio::task::yield_now().await;
+        task::yield_now().await;
     }
     let _ = client.load_cached(backend, lease_id).await.unwrap_err();
     client.stop_force().await.unwrap();

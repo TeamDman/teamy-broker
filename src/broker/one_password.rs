@@ -1,13 +1,18 @@
 use super::adapter::Adapter;
 use crate::protocol::AcquireRequest;
 use crate::protocol::MAX_SECRET;
+use std::env;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::process::Stdio;
+use std::time::Duration;
 use tokio::io::AsyncReadExt;
+use tokio::process::Command;
+use tokio::time;
 use zeroize::Zeroizing;
 #[derive(Debug)]
 pub struct OnePassword {
-    pub executable: std::path::PathBuf,
+    pub executable: PathBuf,
 }
 impl Adapter for OnePassword {
     fn read<'a>(
@@ -17,7 +22,7 @@ impl Adapter for OnePassword {
         Box::pin(async move {
             request.validate()?;
             // Exactly op read, explicit account, no shells, command proxy, service-account or Connect fallback.
-            let mut command = tokio::process::Command::new(&self.executable);
+            let mut command = Command::new(&self.executable);
             command
                 .args([
                     "read",
@@ -35,7 +40,7 @@ impl Adapter for OnePassword {
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
                 .kill_on_drop(true);
-            for (key, _value) in std::env::vars_os() {
+            for (key, _value) in env::vars_os() {
                 if key.to_string_lossy().starts_with("OP_SESSION_") {
                     command.env_remove(key);
                 }
@@ -62,7 +67,7 @@ impl Adapter for OnePassword {
                 );
                 Ok::<_, eyre::Report>(())
             };
-            tokio::time::timeout(std::time::Duration::from_mins(2), operation)
+            time::timeout(Duration::from_mins(2), operation)
                 .await
                 .map_err(|_redacted_error| eyre::eyre!("1Password timeout"))??;
             Ok(bytes)

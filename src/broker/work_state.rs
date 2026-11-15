@@ -1,6 +1,7 @@
 use super::work_guard::WorkGuard;
 use super::work_kind::WorkKind;
 use super::work_snapshot::WorkSnapshot;
+use crate::protocol::FailureKind;
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -9,10 +10,7 @@ pub struct WorkState(pub(crate) Mutex<WorkSnapshot>);
 impl WorkState {
     pub(crate) fn request(self: &Arc<Self>) -> eyre::Result<WorkGuard> {
         let mut state = self.0.lock().expect("work state lock");
-        eyre::ensure!(
-            !state.stopping,
-            crate::protocol::FailureKind::RequestCancelled
-        );
+        eyre::ensure!(!state.stopping, FailureKind::RequestCancelled);
         state.counts[WorkKind::Request as usize] += 1;
         Ok(WorkGuard {
             state: Arc::clone(self),
@@ -40,7 +38,7 @@ impl WorkState {
                     && !cached
                     && !cleanup
                     && state.counts.iter().all(|count| *count == 0)),
-            crate::protocol::FailureKind::ShutdownBlocked
+            FailureKind::ShutdownBlocked
         );
         state.stopping = true;
         Ok(())

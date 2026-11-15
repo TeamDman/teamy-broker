@@ -2,6 +2,13 @@ $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
 $out = Join-Path $root 'build/java-tests'
 New-Item -ItemType Directory -Path $out -Force | Out-Null
+& javac -d $out (Join-Path $root 'src/dev/teamy/broker/dummy/PrivatePhoneConfig.java') (Join-Path $root 'src/dev/teamy/broker/dummy/DurablePhoneConfig.java') (Join-Path $root 'tests/PrivatePhoneConfigTest.java') (Join-Path $root 'tests/DurablePhoneConfigTest.java')
+if ($LASTEXITCODE) { throw 'Phone configuration compile failed' }
+& java -cp $out dev.teamy.broker.dummy.PrivatePhoneConfigTest
+if ($LASTEXITCODE) { throw 'Runtime phone configuration contract failed' }
+& java -cp $out dev.teamy.broker.dummy.DurablePhoneConfigTest
+if ($LASTEXITCODE) { throw 'Durable phone configuration contract failed' }
+
 & javac -d $out (Join-Path $root 'src/dev/teamy/broker/dummy/Crypto.java') (Join-Path $root 'src/dev/teamy/broker/dummy/DummyPolicy.java') (Join-Path $root 'src/dev/teamy/broker/dummy/BootstrapPolicy.java') (Join-Path $root 'tests/CryptoTest.java')
 if ($LASTEXITCODE) { throw 'Java compile failed' }
 & java -cp $out CryptoTest

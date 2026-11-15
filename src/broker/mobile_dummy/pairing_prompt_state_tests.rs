@@ -1,4 +1,5 @@
 use super::PairingPromptState;
+use std::cell::Cell;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
@@ -28,7 +29,7 @@ fn hard_deadline_precedes_presentation() {
 #[test]
 fn eligible_timer_invokes_presentation_and_debug_stays_redacted() {
     let state = state(false, Instant::now() + Duration::from_secs(5));
-    let calls = std::cell::Cell::new(0);
+    let calls = Cell::new(0);
     assert!(!state.on_timer(|| calls.set(calls.get() + 1)));
     assert_eq!(calls.get(), 1);
     assert_eq!(format!("{state:?}"), "PairingPromptState([redacted])");

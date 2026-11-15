@@ -1,4 +1,6 @@
+use crate::broker::shared_preview::SharedPreview;
 use crate::protocol::ApprovalAttentionOutcome;
+use crate::protocol::ApprovalPresentationOutcome;
 use crate::protocol::ApprovalPreviewEvent;
 use crate::protocol::ApprovalPreviewEventKind;
 use std::sync::Arc;
@@ -7,11 +9,11 @@ use windows_sys::Win32::Foundation::HWND;
 #[derive(Debug)]
 pub(crate) struct ApprovalDialogContext<'a> {
     pub state: &'a super::approval_dialog_state::ApprovalDialogState,
-    pub shared: Option<Arc<crate::broker::shared_preview::SharedPreview>>,
+    pub shared: Option<Arc<SharedPreview>>,
     pub secret_input: Mutex<Option<usize>>,
     pub attention: super::approval_attention::DialogAttention,
     pub presentation: super::approval_presentation::DialogPresentation,
-    pub presentation_outcome: Mutex<Option<crate::protocol::ApprovalPresentationOutcome>>,
+    pub presentation_outcome: Mutex<Option<ApprovalPresentationOutcome>>,
     pub events: Option<Mutex<Vec<ApprovalPreviewEvent>>>,
     pub outcome: Mutex<Option<ApprovalAttentionOutcome>>,
 }

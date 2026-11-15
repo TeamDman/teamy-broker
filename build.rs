@@ -1,6 +1,12 @@
+use std::env;
+use std::fmt::Arguments;
 use std::process::Command;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
+
+#[path = "build_support/public_repository.rs"]
+mod public_repository;
+use public_repository::public_repository;
 
 fn main() {
     add_build_script_inputs();
@@ -14,13 +20,14 @@ fn main() {
     clippy::disallowed_macros,
     reason = "Build-script stdout is Cargo's instruction protocol, not runtime logging"
 )]
-fn cargo_instruction(instruction: std::fmt::Arguments<'_>) {
+fn cargo_instruction(instruction: Arguments<'_>) {
     println!("cargo:{instruction}");
 }
 
 /// Re-run the build script when normal binary inputs change so embedded build metadata stays fresh.
 fn add_build_script_inputs() {
     cargo_instruction(format_args!("rerun-if-changed=build.rs"));
+    cargo_instruction(format_args!("rerun-if-changed=build_support"));
     cargo_instruction(format_args!("rerun-if-changed=Cargo.toml"));
     cargo_instruction(format_args!("rerun-if-changed=src"));
 }
@@ -48,9 +55,10 @@ fn add_git_metadata() {
         git_output(&["describe", "--tags", "--exact-match"])
             .unwrap_or_else(|| "detached".to_string())
     });
-    let repository = git_output(&["remote", "get-url", "origin"])
-        .or_else(|| std::env::var("CARGO_PKG_REPOSITORY").ok())
-        .unwrap_or_else(|| "unknown".to_string());
+    // Local origins can contain credentials or private filesystem paths. Package
+    // metadata is the reviewed public identity; never embed a clone's remote URL.
+    let package_repository = env::var("CARGO_PKG_REPOSITORY").ok();
+    let repository = public_repository(package_repository.as_deref());
     let dirty = match git_output_allow_empty(&["status", "--short", "--untracked-files=no"]) {
         Some(status) if status.is_empty() => "clean",
         Some(_) => "dirty",

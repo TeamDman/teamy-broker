@@ -1,4 +1,5 @@
 use crate::protocol::ApprovalPresentationOutcome;
+use std::ptr;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use windows_sys::Win32::Foundation::GetLastError;
@@ -26,7 +27,7 @@ impl DialogPresentation {
                 let shown = unsafe {
                     SetWindowPos(
                         hwnd,
-                        std::ptr::null_mut(),
+                        ptr::null_mut(),
                         0,
                         0,
                         0,

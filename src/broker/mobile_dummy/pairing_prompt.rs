@@ -4,7 +4,13 @@ use super::pairing_prompt_state::PairingPromptState;
 use crate::platform::approval_attention::DialogAttention;
 use crate::platform::approval_presentation::DialogPresentation;
 use crate::protocol::ApprovalPreviewEventKind;
+use crate::protocol::phone_status::PhoneFailureCategory;
+use std::mem;
+use std::ptr;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+use std::time::Instant;
 use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::UI::Controls::TASKDIALOG_BUTTON;
 use windows_sys::Win32::UI::Controls::TASKDIALOGCONFIG;
@@ -49,8 +55,7 @@ unsafe extern "system" fn callback(
             let _ = attempt.native(wparam == 100);
         }
         if let Some(trace) = &context.trace {
-            let live =
-                !state.closed.load(Ordering::Acquire) && std::time::Instant::now() < state.until;
+            let live = !state.closed.load(Ordering::Acquire) && Instant::now() < state.until;
             let phase = if wparam == 100 {
                 Some(super::preview_phase::PreviewPhase::LocalMatch)
             } else if live && (wparam == 101 || wparam == 2) {
@@ -90,7 +95,7 @@ unsafe extern "system" fn callback(
         state.closed.store(true, Ordering::Release);
     }
     if notification == 4 && state.on_timer(|| context.present(hwnd)) {
-        let phase = if std::time::Instant::now() >= state.until {
+        let phase = if Instant::now() >= state.until {
             super::preview_phase::PreviewPhase::LocalTimeout
         } else {
             super::preview_phase::PreviewPhase::LocalCancelled
@@ -107,7 +112,7 @@ pub(super) fn show(state: &PairingPromptState) -> eyre::Result<bool> {
 }
 pub(super) fn show_traced(
     state: &PairingPromptState,
-    trace: std::sync::Arc<super::preview_phase::PreviewTrace>,
+    trace: Arc<super::preview_phase::PreviewTrace>,
 ) -> eyre::Result<bool> {
     show_core_traced(state, None, true, Some(trace), false)
 }
@@ -125,7 +130,7 @@ fn show_core_traced(
     state: &PairingPromptState,
     diagnostics: Option<&PairingPromptDiagnostics>,
     presentation_enabled: bool,
-    trace: Option<std::sync::Arc<super::preview_phase::PreviewTrace>>,
+    trace: Option<Arc<super::preview_phase::PreviewTrace>>,
     persistent: bool,
 ) -> eyre::Result<bool> {
     let context = PairingPromptContext {
@@ -135,7 +140,7 @@ fn show_core_traced(
         diagnostics,
         presentation_enabled,
         trace,
-        visible_reported: std::sync::atomic::AtomicBool::new(false),
+        visible_reported: AtomicBool::new(false),
     };
     let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
     let title = wide(if diagnostics.is_some() {
@@ -146,22 +151,13 @@ fn show_core_traced(
         "teamy-broker DUMMY ONLY · compare pairing code"
     });
     let raw_text = Zeroizing::new(format!(
-        "Compare all four groups with the foreground phone app:\n\n{}\n\nPhone: {}\nTailscale node: {}\nEndpoint: {}:{}\n\nTap Match on BOTH screens only if every group matches. Reject a mismatch or an unexpected prompt. This authenticates this live UKEY2 session only, not a saved phone pairing. No credential request or value is sent before both confirmations. Dummy-only, no vault access. Pairing expires within 90 seconds; listener within 180 seconds.",
-        *state.code,
-        super::tailnet_peer::PHONE,
-        super::tailnet_peer::PHONE_NODE,
-        super::tailnet_peer::DESKTOP,
-        super::tailnet_peer::PORT
+        "Compare all four groups with the foreground phone app:\n\n{}\n\nTap Match on BOTH screens only if every group matches. Reject a mismatch or an unexpected prompt. This authenticates this live UKEY2 session only, not a saved phone pairing. No credential request or value is sent before both confirmations. Dummy-only, no vault access. Pairing expires within 90 seconds; listener within 180 seconds.",
+        *state.code
     ));
     let raw_text = if persistent {
         Zeroizing::new(format!(
-            "Compare all four groups on the phone:\n\n{}\n\nPERSISTENT NO-VAULT APPROVAL PAIRING\nDesktop {}:{} / {}\nPhone {} / {}\n\nMatch on BOTH screens only if every group agrees. This saves protected TLS device identities for future no-vault approval previews. It enables an exact Tailscale-only resident listener. Phone keys stay in Android Keystore; desktop keys use current-user DPAPI. No phone vault access or credential lease is enabled. Revoke with phone-revoke. Reject unexpected pairing. This comparison expires within the five-minute enrollment window.",
-            *state.code,
-            super::tailnet_peer::DESKTOP,
-            super::tailnet_peer::PORT,
-            super::tailnet_peer::DESKTOP_NODE,
-            super::tailnet_peer::PHONE,
-            super::tailnet_peer::PHONE_NODE
+            "Compare all four groups on the phone:\n\n{}\n\nPERSISTENT NO-VAULT APPROVAL PAIRING\n\nMatch on BOTH screens only if every group agrees. This saves protected TLS device identities for future no-vault approval previews. It enables an exact Tailscale-only resident listener. Phone keys stay in Android Keystore; desktop keys use current-user DPAPI. No phone vault access or credential lease is enabled. Revoke with phone-revoke. Reject unexpected pairing. This comparison expires within the five-minute enrollment window.",
+            *state.code
         ))
     } else {
         raw_text
@@ -180,7 +176,7 @@ fn show_core_traced(
         },
     ];
     let config = TASKDIALOGCONFIG {
-        cbSize: u32::try_from(std::mem::size_of::<TASKDIALOGCONFIG>())?,
+        cbSize: u32::try_from(mem::size_of::<TASKDIALOGCONFIG>())?,
         dwFlags: TDF_ALLOW_DIALOG_CANCELLATION | TDF_CALLBACK_TIMER,
         pszWindowTitle: title.as_ptr(),
         pszContent: message_body.as_ptr(),
@@ -188,7 +184,7 @@ fn show_core_traced(
         pButtons: buttons.as_ptr(),
         nDefaultButton: 101,
         pfCallback: Some(callback),
-        lpCallbackData: std::ptr::from_ref(&context) as isize,
+        lpCallbackData: ptr::from_ref(&context) as isize,
         ..Default::default()
     };
     let mut button = 0;
@@ -197,8 +193,8 @@ fn show_core_traced(
         TaskDialogIndirect(
             &raw const config,
             &raw mut button,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
         )
     };
     if let Some(diagnostics) = diagnostics {
@@ -208,13 +204,11 @@ fn show_core_traced(
     if result < 0
         && let Some(attempt) = &state.confirmation
     {
-        attempt.failure(crate::protocol::phone_status::PhoneFailureCategory::PairingUiUnavailable);
+        attempt.failure(PhoneFailureCategory::PairingUiUnavailable);
     }
     eyre::ensure!(result >= 0, "pairing UI unavailable");
     if let Some(attempt) = &state.confirmation {
         return Ok(attempt.accepted() && !state.closed.load(Ordering::Acquire));
     }
-    Ok(button == 100
-        && !state.closed.load(Ordering::Acquire)
-        && std::time::Instant::now() < state.until)
+    Ok(button == 100 && !state.closed.load(Ordering::Acquire) && Instant::now() < state.until)
 }

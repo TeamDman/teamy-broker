@@ -26,8 +26,3 @@ pub mod received_decision;
 pub mod system_clock;
 
 pub mod pairing_binding;
-
-/// Build-local exact phone scope. An unconfigured build cannot activate the network listener.
-pub mod phone_config {
-    include!(concat!(env!("OUT_DIR"), "/phone_config.rs"));
-}

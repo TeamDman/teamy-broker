@@ -1,3 +1,6 @@
+use teamy_broker::broker::mobile_dummy;
+use teamy_broker::broker::server;
+use tokio::time;
 #[path = "support/fake_adapter.rs"]
 mod fake_adapter;
 #[path = "support/fake_preview_approval.rs"]
@@ -32,7 +35,7 @@ async fn resident_ipc_reconciles_shared_decisions_without_provider_storage_or_le
         let engine = Arc::clone(&engine);
         let endpoint = endpoint.clone();
         async move {
-            teamy_broker::broker::server::serve_at(
+            server::serve_at(
                 engine,
                 teamy_cancellation::CancellationToken::new(),
                 &endpoint,
@@ -45,12 +48,12 @@ async fn resident_ipc_reconciles_shared_decisions_without_provider_storage_or_le
         .unwrap()
         .with_endpoint(endpoint)
         .with_deadlines(Duration::from_secs(2), Duration::from_secs(3));
-    tokio::time::timeout(Duration::from_secs(2), async {
+    time::timeout(Duration::from_secs(2), async {
         loop {
             if client.shared_preview_state().await.is_ok() {
                 break;
             }
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await
@@ -105,7 +108,7 @@ fn malformed_preview_commands_cannot_inject_acquisition() {
     ] {
         let mut request = Request::control(operation, Some("not-a-preview".into()));
         assert!(request.validate().is_err());
-        request.acquire = Some(teamy_broker::broker::mobile_dummy::request());
+        request.acquire = Some(mobile_dummy::request());
         assert!(request.validate().is_err());
     }
 }

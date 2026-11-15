@@ -1,11 +1,23 @@
 use super::approval_dialog_context::ApprovalDialogContext;
 use super::approval_dialog_text::ApprovalDialogText;
+use crate::broker::shared_preview::SharedPreview;
+use crate::broker::work_guard::WorkGuard;
 use crate::protocol::ApprovalPreviewDisposition;
 use crate::protocol::ApprovalPreviewEventKind;
 use crate::protocol::ApprovalPreviewResult;
+use crate::protocol::FailureKind;
+use crate::protocol::wire;
+use std::mem;
+use std::ptr;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
+use std::time::Duration;
+use std::time::Instant;
 use windows_sys::Win32::Foundation::HWND;
+use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+use windows_sys::Win32::System::Threading::GetStartupInfoW;
+use windows_sys::Win32::System::Threading::STARTUPINFOW;
 use windows_sys::Win32::UI::Controls::TASKDIALOG_BUTTON;
 use windows_sys::Win32::UI::Controls::TASKDIALOGCONFIG;
 use windows_sys::Win32::UI::Controls::TDF_ALLOW_DIALOG_CANCELLATION;
@@ -102,27 +114,27 @@ pub(crate) fn show_shared(
     text: &ApprovalDialogText,
     pid: u32,
     cancel: &Arc<AtomicBool>,
-    work: Option<crate::broker::work_guard::WorkGuard>,
+    work: Option<WorkGuard>,
     preview: bool,
-    shared: Option<Arc<crate::broker::shared_preview::SharedPreview>>,
+    shared: Option<Arc<SharedPreview>>,
 ) -> eyre::Result<ApprovalPreviewResult> {
-    let started_unix_ms = crate::protocol::wire::unix_ms()?;
+    let started_unix_ms = wire::unix_ms()?;
     let state = super::approval_dialog_state::ApprovalDialogState {
         work,
-        dialog: std::sync::Mutex::new(None),
+        dialog: Mutex::new(None),
         cancel: Arc::clone(cancel),
         timed_out: AtomicBool::new(false),
-        deadline: std::time::Instant::now() + std::time::Duration::from_mins(1),
+        deadline: Instant::now() + Duration::from_mins(1),
     };
     let context = ApprovalDialogContext {
         state: &state,
-        secret_input: std::sync::Mutex::new(None),
+        secret_input: Mutex::new(None),
         shared,
         attention: super::approval_attention::DialogAttention::default(),
         presentation: super::approval_presentation::DialogPresentation::default(),
-        presentation_outcome: std::sync::Mutex::new(None),
-        events: preview.then(|| std::sync::Mutex::new(Vec::new())),
-        outcome: std::sync::Mutex::new(None),
+        presentation_outcome: Mutex::new(None),
+        events: preview.then(|| Mutex::new(Vec::new())),
+        outcome: Mutex::new(None),
     };
     let supply_enabled = context.shared.as_ref().is_some_and(|s| s.allows_supply());
     let supply_label = super::identity::wide("Send entered credential");
@@ -141,7 +153,7 @@ pub(crate) fn show_shared(
         },
     ];
     let config = TASKDIALOGCONFIG {
-        cbSize: u32::try_from(std::mem::size_of::<TASKDIALOGCONFIG>())?,
+        cbSize: u32::try_from(mem::size_of::<TASKDIALOGCONFIG>())?,
         dwFlags: TDF_ALLOW_DIALOG_CANCELLATION | TDF_CALLBACK_TIMER,
         pszWindowTitle: text.title.as_ptr(),
         pszMainInstruction: text.instruction.as_ptr(),
@@ -159,8 +171,8 @@ pub(crate) fn show_shared(
         TaskDialogIndirect(
             &raw const config,
             &raw mut selected,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
         )
     };
     finish(context, selected, hresult, started_unix_ms, pid, preview)
@@ -175,8 +187,7 @@ fn finish(
 ) -> eyre::Result<ApprovalPreviewResult> {
     let validation = context.state.result(selected == APPROVE);
     let cancelled = validation.as_ref().is_err_and(|error| {
-        error.downcast_ref::<crate::protocol::FailureKind>()
-            == Some(&crate::protocol::FailureKind::RequestCancelled)
+        error.downcast_ref::<FailureKind>() == Some(&FailureKind::RequestCancelled)
     });
     let disposition = disposition(
         cancelled,
@@ -194,14 +205,14 @@ fn finish(
         .map(|events| events.into_inner().expect("preview event lock"))
         .unwrap_or_default();
     // SAFETY: obtains this process's public numeric PID.
-    let broker_pid = unsafe { windows_sys::Win32::System::Threading::GetCurrentProcessId() };
-    let mut startup = windows_sys::Win32::System::Threading::STARTUPINFOW::default();
+    let broker_pid = unsafe { GetCurrentProcessId() };
+    let mut startup = STARTUPINFOW::default();
     // SAFETY: initialized writable structure receives only this process's startup metadata.
-    unsafe { windows_sys::Win32::System::Threading::GetStartupInfoW(&raw mut startup) };
+    unsafe { GetStartupInfoW(&raw mut startup) };
     Ok(ApprovalPreviewResult {
         disposition,
         started_unix_ms,
-        finished_unix_ms: crate::protocol::wire::unix_ms()?,
+        finished_unix_ms: wire::unix_ms()?,
         broker_pid,
         connected_client_pid: pid,
         broker_executable,

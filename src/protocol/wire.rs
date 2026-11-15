@@ -1,4 +1,7 @@
 use facet::Facet;
+use std::str::from_utf8;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWrite;
@@ -27,8 +30,7 @@ pub async fn read<T: Facet<'static>, R: AsyncRead + Unpin>(stream: &mut R) -> ey
     eyre::ensure!(len <= 16384, "oversized metadata");
     let mut bytes = Zeroizing::new(vec![0; len]);
     stream.read_exact(&mut bytes).await?;
-    let text =
-        std::str::from_utf8(&bytes).map_err(|_redacted_error| eyre::eyre!("invalid metadata"))?;
+    let text = from_utf8(&bytes).map_err(|_redacted_error| eyre::eyre!("invalid metadata"))?;
     facet_json::from_str(text).map_err(|_redacted_error| eyre::eyre!("invalid metadata"))
 }
 /// # Errors
@@ -56,8 +58,6 @@ pub async fn write_secret<W: AsyncWrite + Unpin>(stream: &mut W, bytes: &[u8]) -
 /// Returns an error on invalid configuration, expired leases, denial, or failed I/O.
 pub fn unix_ms() -> eyre::Result<u64> {
     Ok(u64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_millis(),
+        SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),
     )?)
 }

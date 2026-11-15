@@ -1,3 +1,2 @@
 mod teamy_broker_phone_pair_confirm_cli;
 pub use teamy_broker_phone_pair_confirm_cli::PhonePairConfirmArgs;
-pub(crate) use teamy_broker_phone_pair_confirm_cli::read_code;
