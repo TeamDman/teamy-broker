@@ -35,64 +35,92 @@ pub async fn serve_at(
     endpoint: &str,
     reconcile: bool,
 ) -> eyre::Result<()> {
-    let mut listener = pipe_security::create(endpoint, true)?;
+    serve_with_listener_factory(
+        engine,
+        cancellation,
+        endpoint,
+        reconcile,
+        pipe_security::create,
+    )
+    .await
+}
+
+async fn serve_with_listener_factory(
+    engine: Arc<Engine>,
+    cancellation: CancellationToken,
+    endpoint: &str,
+    reconcile: bool,
+    create_listener: impl Fn(&str, bool) -> eyre::Result<NamedPipeServer> + Send + Sync,
+) -> eyre::Result<()> {
+    let mut listener = create_listener(endpoint, true)?;
     tracing::info!(phase = "pipe-created", "Broker startup");
-    // First pipe instance remains held throughout startup: racing servers cannot reconcile live leases.
-    if reconcile {
-        tracing::info!(phase = "reconcile", "Broker startup");
-        super::persistence::reconcile()?;
-    }
-    let phone_task = if reconcile && endpoint == identity::endpoint()? {
-        let controller = super::phone::Controller::resident()?;
-        let cancellation = cancellation.clone();
-        let engine = Arc::clone(&engine);
-        Some(tokio::spawn(async move {
-            if super::phone::run(controller, cancellation, engine)
-                .await
-                .is_err()
-            {
-                tracing::error!(
-                    phase = "phone-runtime-failed",
-                    "No-vault phone actor stopped; inspect phone-status"
-                );
-            }
-        }))
-    } else {
-        None
-    };
-    tracing::info!(phase = "ready", "Broker ready");
-    let instance = uuid::Uuid::new_v4().to_string();
+    let mut phone = JoinSet::new();
     let mut clients = JoinSet::new();
-    let slots = Arc::new(Semaphore::new(32));
-    let mut maintenance = time::interval(Duration::from_millis(100));
-    loop {
-        tokio::select! {
-            result=listener.connect()=>{
-                result?;
-                let next=pipe_security::create(endpoint,false)?;
-                let connected=mem::replace(&mut listener,next);
-                if let Ok(permit)=Arc::clone(&slots).try_acquire_owned(){
-                    let engine=Arc::clone(&engine);let instance=instance.clone();
-                    clients.spawn(async move {let _permit=permit;let _=session(connected,engine,instance).await;});
-                }
-            }
-            _=maintenance.tick()=>{
-                if cancellation.is_cancelled() || engine.stop_ready.load(Ordering::SeqCst){break}
-                engine.expire().await?;
-            }
-            _=clients.join_next(),if !clients.is_empty()=>{}
+    let mut maintenance = JoinSet::new();
+    let result = async {
+        // Keep the first pipe instance throughout startup and all final cleanup.
+        if reconcile {
+            tracing::info!(phase = "reconcile", "Broker startup");
+            super::persistence::reconcile()?;
         }
-    }
-    if let Some(task) = phone_task {
-        task.abort();
-        let _ = task.await;
-    }
+        if reconcile && endpoint == identity::endpoint()? {
+            let controller = super::phone::Controller::resident()?;
+            let cancellation = cancellation.clone();
+            let engine = Arc::clone(&engine);
+            phone.spawn(async move {
+                if super::phone::run(controller, cancellation, engine).await.is_err() {
+                    tracing::error!(
+                        phase = "phone-runtime-failed",
+                        "No-vault phone actor stopped; inspect phone-status"
+                    );
+                }
+            });
+        }
+        tracing::info!(phase = "ready", "Broker ready");
+        let instance = uuid::Uuid::new_v4().to_string();
+        let slots = Arc::new(Semaphore::new(32));
+        let mut maintenance_tick = time::interval(Duration::from_millis(100));
+        loop {
+            tokio::select! {
+                connected=listener.connect()=>{
+                    connected?;
+                    let next=create_listener(endpoint,false)?;
+                    let connected=mem::replace(&mut listener,next);
+                    if let Ok(permit)=Arc::clone(&slots).try_acquire_owned(){
+                        let engine=Arc::clone(&engine);let instance=instance.clone();
+                        clients.spawn(async move {let _permit=permit;let _=session(connected,engine,instance).await;});
+                    }
+                }
+                _=maintenance_tick.tick()=>{
+                    if cancellation.is_cancelled() || engine.stop_ready.load(Ordering::SeqCst){break}
+                    if maintenance.is_empty() {
+                        let engine = Arc::clone(&engine);
+                        maintenance.spawn(async move { engine.expire().await });
+                    }
+                }
+                completed=maintenance.join_next(),if !maintenance.is_empty()=>{
+                    if let Some(completed) = completed {
+                        completed.map_err(|_panic| eyre::eyre!("broker maintenance worker failed"))??;
+                    }
+                }
+                _=clients.join_next(),if !clients.is_empty()=>{}
+            }
+        }
+        Ok::<(), eyre::Report>(())
+    }.await;
     engine.stopping.store(true, Ordering::SeqCst);
+    phone.abort_all();
     clients.abort_all();
+    maintenance.abort_all();
+    while phone.join_next().await.is_some() {}
     while clients.join_next().await.is_some() {}
-    engine.shutdown().await?;
+    while maintenance.join_next().await.is_some() {}
+    // Aborted async maintenance does not abandon its owned native cleanup workers.
+    // Cleanup failure takes priority over an accept/maintenance error for recovery.
+    let cleaned = engine.shutdown().await;
     drop(listener);
-    Ok(())
+    cleaned?;
+    result
 }
 async fn session(
     mut pipe: NamedPipeServer,
@@ -252,3 +280,7 @@ fn is_phone_control(operation: &str) -> bool {
             | "phone-authorize-fixture"
     )
 }
+
+#[cfg(test)]
+#[path = "server_tests.rs"]
+mod tests;

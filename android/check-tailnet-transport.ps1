@@ -1,11 +1,19 @@
 #requires -Version 7.0
+[CmdletBinding()]
+param([string]$TargetDirectory)
 $ErrorActionPreference='Stop'
-# This tests the exact Android TLS helper under Java17 against Rustls on isolated loopback only.
+# This tests the host TLS fixture under Java17 against Rustls on isolated loopback only.
 # It never calls the tailnet activation entry point, starts a desktop dialog, or writes private keys.
-$probe=Join-Path (Split-Path $PSScriptRoot) 'target/debug/examples/mobile_tls_probe.exe'
+if (-not $TargetDirectory) {
+    $manifest = Join-Path (Split-Path $PSScriptRoot) 'Cargo.toml'
+    $metadataText = & cargo metadata --offline --locked --no-deps --format-version 1 --manifest-path $manifest
+    if ($LASTEXITCODE -ne 0) { throw 'Cargo metadata failed before locating the TLS probe.' }
+    $TargetDirectory = ($metadataText | ConvertFrom-Json).target_directory
+}
+$probe=Join-Path $TargetDirectory 'debug/examples/mobile_tls_probe.exe'
 if (!(Test-Path -LiteralPath $probe)) { throw 'Build mobile_tls_probe in a serialized slot first.' }
 $out=Join-Path $PSScriptRoot 'build/tls-check'; New-Item -ItemType Directory -Path $out -Force | Out-Null
-$sources=@('src/dev/teamy/broker/dummy/Crypto.java','src/dev/teamy/broker/dummy/DummyPolicy.java','src/dev/teamy/broker/dummy/PinnedTls.java','tests/TlsTest.java') | ForEach-Object {Join-Path $PSScriptRoot $_}
+$sources=@('tests/support/dev/teamy/broker/dummy/PinnedTls.java','tests/TlsTest.java') | ForEach-Object {Join-Path $PSScriptRoot $_}
 & javac -encoding UTF-8 -d $out @sources
 if ($LASTEXITCODE) { throw 'TLS test source compilation failed.' }
 foreach ($wrong in @($false,$true)) {
@@ -26,7 +34,7 @@ foreach ($wrong in @($false,$true)) {
         $clientOut=$client.StandardOutput.ReadToEndAsync();$clientError=$client.StandardError.ReadToEndAsync()
         if(!$client.WaitForExit(5000) -or $client.ExitCode -ne 0) {throw 'Isolated Java TLS pin test failed.'}
         if(!$server.WaitForExit(5000) -or $server.ExitCode -ne 0) {throw 'Isolated Rust TLS probe failed.'}
-        Write-Output $(if($wrong){'Exact Android TLS helper rejected a wrong certificate pin.'}else{'Exact Android TLS helper completed TLS1.2 and a fixed-dummy frame exchange with Rustls.'})
+        Write-Output $(if($wrong){'Host TLS fixture rejected a wrong certificate pin.'}else{'Host TLS fixture completed TLS1.2 and a fixed-dummy frame exchange with Rustls.'})
     } finally {
         if($client){if(!$client.HasExited){$client.Kill()};$client.Dispose()}
         if($server){if(!$server.HasExited){$server.Kill()};$server.Dispose()}

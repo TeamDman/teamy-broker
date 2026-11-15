@@ -1,3 +1,4 @@
+use crate::broker::app_request::AppRequest;
 use crate::protocol::pairing_comparison::PairingCode;
 use arbitrary::Arbitrary;
 use facet::Facet;
@@ -31,6 +32,15 @@ pub struct PhonePairConfirmArgs {
 }
 
 impl PhonePairConfirmArgs {
+    /// # Errors
+    /// Requires an exact attempt UUID and separately collected comparison input.
+    pub fn into_request(self, comparison: Option<PairingCode>) -> eyre::Result<AppRequest> {
+        let attempt_id = self.attempt_id.try_into()?;
+        eyre::ensure!(self.comparison_stdin, "--comparison-stdin required");
+        let code = comparison.ok_or_else(|| eyre::eyre!("comparison input required"))?;
+        Ok(AppRequest::PairingConfirm { attempt_id, code })
+    }
+
     pub(crate) fn validate(&self) -> eyre::Result<()> {
         uuid::Uuid::parse_str(&self.attempt_id)
             .map_err(|_redacted_error| eyre::eyre!("invalid attempt ID"))?;

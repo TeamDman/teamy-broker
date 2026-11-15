@@ -1,7 +1,7 @@
-use crate::broker::synthetic_credential_fixture;
+use crate::broker::phone_authorization_mode::PhoneAuthorizationMode;
+use crate::broker::phone_authorization_request::PhoneAuthorizationRequest;
 use crate::protocol::AcquireRequest;
 use crate::protocol::Backend;
-use crate::protocol::Request;
 use arbitrary::Arbitrary;
 use facet::Facet;
 use figue as args;
@@ -28,35 +28,24 @@ pub struct PhoneAuthorizeArgs {
 impl PhoneAuthorizeArgs {
     /// # Errors
     /// Rejects invalid metadata, unavailable state, cancellation or expiry.
-    pub fn request(self) -> eyre::Result<Request> {
-        let request = Request {
-            operation: if self.synthetic_fixture {
-                "phone-authorize-fixture"
-            } else if self.supply {
-                "phone-authorize-supply"
-            } else {
-                "phone-authorize-desktop"
-            }
-            .into(),
-            acquire: Some(AcquireRequest {
+    pub fn into_request(self) -> eyre::Result<PhoneAuthorizationRequest> {
+        let mode = if self.synthetic_fixture {
+            PhoneAuthorizationMode::SyntheticFixture
+        } else if self.supply {
+            PhoneAuthorizationMode::AllowSupply
+        } else {
+            PhoneAuthorizationMode::DesktopOnly
+        };
+        PhoneAuthorizationRequest::new(
+            AcquireRequest {
                 account: self.account,
                 secret_ref: self.secret_ref,
                 requesting_app: self.requesting_app,
                 purpose: self.purpose,
                 destination: self.destination,
                 backend: Backend::Memory,
-            }),
-            lease_id: None,
-        };
-        request.validate()?;
-        if self.synthetic_fixture {
-            synthetic_credential_fixture::validate(
-                request
-                    .acquire
-                    .as_ref()
-                    .ok_or_else(|| eyre::eyre!("missing fixture"))?,
-            )?;
-        }
-        Ok(request)
+            },
+            mode,
+        )
     }
 }

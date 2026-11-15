@@ -4,6 +4,8 @@ The resident broker supports an explicitly enrolled phone for shared approval pr
 
 ## Dependencies and offline checks
 
+The complete host sequence requires PowerShell 7 or later and JDK 17 or later, in addition to the installed Rust toolchains and pinned Java dependencies.
+
 The Windows broker uses the pinned official Google Java UKEY2 implementation for initial human comparison, then TLS 1.3 with mutual certificate authentication for enrolled connections. The existing JDK must provide `java`, `javac`, and `jar`. `pairing/java/dependencies-lock.json` pins the local dependency files; `vendor-lock.json` pins the retained upstream sources. Populate the ignored `pairing/java/deps` directory with the separately obtained matching files before building. The build script verifies hashes and fails on missing or mismatched inputs; it downloads nothing and executes no upstream build script. Keep the source locks and vendored UKEY2 `LICENSE`/`NOTICE`; see [pairing ownership and provenance](mobile-handoff.md#pairing-implementation-and-provenance).
 
 Run from the repository root with the required Rust toolchains and dependencies already available:
@@ -21,11 +23,29 @@ Build the examples before tests: provider cancellation launches `synthetic_op_wa
 
 Android APK packaging additionally requires an existing approved Android SDK platform 35/36, build tools, and an explicitly selected signing key. `android/build-debug.ps1` produces the synthetic debug package. `android/build-release.ps1` requires an existing private signing identity, password environment-variable names, and its expected fingerprint; it does not create a key or install/pair a device. The public debug signer is unsuitable for real credentials.
 
-The broker reads `phone-profile.json` at runtime through `PhoneProfile::load(&home)`. The caller supplies the application home. The file must identify both peers and an absolute Java executable path. See the schema rules below. Missing or invalid configuration rejects phone network activation.
+## Runtime configuration
 
-The legacy `.\use-private-phone-profile.ps1` helper reads the ignored `private-phone-profile.local.json` into the current shell's environment. It requires string values for its seven `TEAMY_BROKER_*` fields. It does not install or migrate the broker's runtime profile.
+Use the same executable to configure and change phone settings; rebuilding does not select a device. With the daemon stopped, supply the seven ordinary settings through the CLI:
 
-The listener checks the actual socket peer and local node through Tailscale metadata against that exact configured scope; there is no arbitrary-host or all-interface fallback. The broker also requires the explicitly selected absolute Java executable at runtime. Runtime artifact lookup currently assumes the source-tree `pairing/java` layout.
+```powershell
+teamy-broker phone-configure --desktop-ip DESKTOP_TAILNET_IP --phone-ip PHONE_TAILNET_IP --desktop-node DESKTOP_NODE_ID --phone-node PHONE_NODE_ID --tailnet-user NUMERIC_USER_ID --phone-name PHONE_DNS_NAME --java-executable ABSOLUTE_JAVA_EXE_PATH
+teamy-broker phone-config-show
+teamy-broker phone-config-validate
+```
+
+Replace the uppercase placeholders with your values. Leaf `--help` describes every flag. `phone-config-show` reports schema and Java availability without private identifiers or paths; add `--show-values` to disclose them explicitly. Validation checks the stored profile and Java file, without contacting Tailscale, connecting to a phone or changing trust. Use text or JSON output for these commands.
+
+The commands read and write `phone-profile.json` under the normal application configuration directory. `TEAMY_BROKER_HOME_DIR` or the configuration commands' `--app-home` option can select an absolute directory. Set `TEAMY_BROKER_HOME_DIR` to that same directory when starting `serve`; `serve` has no `--app-home` option. A configuration override does not move the protected per-user enrollment identity. Reading legacy configuration upgrades it in memory without rewriting it. Explicit configure writes the current schema through a synced temporary file and atomic replacement.
+
+An active daemon excludes configuration writes through its existing first-instance pipe ownership. An enrolled identity permits an identical profile only. To change an enrolled peer or JDK setting, explicitly revoke the relationship, stop the broker, configure it, start it, and pair again. A new pairing attempt creates a fresh desktop identity for the current address. Invalid input, unavailable identity storage or failed publication cannot silently replace trust or partially overwrite the profile. Configure never starts the service or enrolls a phone.
+
+On Android, open **Connection & identity settings**, enter the matching desktop/phone IP addresses and node IDs, then choose **Save**. Stop active pairing and the approval connection first. Changed settings are rejected while paired; explicitly use **Forget** on the phone and revoke the desktop relationship before replacing them. Saving identical settings preserves trust. Android stores the four values as one committed configuration row, so a failed save cannot activate a partial profile.
+
+The former environment-loading and dummy-tailnet launch scripts were removed: the Rust runtime now reads the configured profile directly. Existing ignored private files are not migrated or deleted by the cleanup; configure the selected runtime home through the commands above.
+
+The listener checks the actual socket peer and local node through Tailscale metadata against that exact configured scope; there is no arbitrary-host or all-interface fallback. Listener admission and worker startup share one profile snapshot. Missing, invalid or changed configuration invalidates ongoing work. Use the CLI workflow instead of editing an enrolled profile by hand.
+
+For phone support, distribute the compiled Java worker and pinned dependencies beside the broker executable. After building the Rust binary and running `pairing/java/build.ps1`, `package-broker.ps1 -BinaryPath <built-executable> -OutputDirectory <new-directory>` creates a standalone package. The destination must not exist. The helper verifies the Java build receipt, source/dependency locks and runtime hashes, copies required licenses, and records relative package hashes. Keep the executable and its sibling `pairing` directory together when moving the package. Production lookup uses that directory and the configured Java executable, without the source checkout. Packaging does not install, start or pair anything.
 
 ## Phone profile schema
 
@@ -39,7 +59,7 @@ New runtime profiles must include the top-level field `"schema_version": 1`. Ver
 
 The reader checks the schema version before decoding the profile fields. Missing `schema_version`, or an explicit value of `0`, selects the legacy layout. That layout has the same seven fields and upgrades to version 1 without changing the peer scope. The migration report identifies the source version and includes a diagnostic. File loading logs that diagnostic and leaves the file unchanged.
 
-`PhoneProfile::parse_json` returns the runtime profile and migration report. `PhoneProfile::to_json` validates the profile and serializes version 1, including its version field. To update an existing file, serialize the parsed profile and save the result explicitly. Reading never rewrites configuration.
+`PhoneProfile::parse_json` returns the runtime profile and migration report. `PhoneProfile::to_json` validates the profile and serializes version 1, including its version field. `phone-configure` owns supported writes and their enrollment checks. Reading never rewrites configuration.
 
 Malformed versions and unsupported versions fail. The reader does not retry them as legacy profiles. Both supported layouts enforce the same peer and Java-path validation. Configuration files remain limited to 8192 bytes, and load failures retain their underlying I/O, UTF-8, and JSON errors.
 
@@ -47,7 +67,7 @@ The implementation follows the [Facet JSON versioning approach](https://teamdman
 
 ## Explicit enrollment
 
-Phone commands contact an already-running compatible resident through its secured same-user named pipe; they never autostart it. Coordinate the phone and desktop before arming enrollment. Inspect the current relationship first:
+Enrollment, relationship status and authorization commands contact an already-running compatible resident through its secured same-user named pipe; they never autostart it. Coordinate the phone and desktop before arming enrollment. Inspect the current relationship first:
 
 ```powershell
 teamy-broker phone-list
@@ -65,7 +85,7 @@ teamy-broker phone-pair-confirm --attempt-id ATTEMPT_UUID --comparison-stdin
 teamy-broker phone-pair-cancel --attempt-id ATTEMPT_UUID
 ```
 
-Inspection intentionally displays the active comparison and expiry. Treat that output as local pairing material. Confirmation reads the independently supplied phone comparison from stdin: one line, at most 128 bytes, within five seconds; Enter or piped EOF terminates input. Do not put the comparison in command arguments, logs, or shell history, and never automatically feed desktop inspection output into confirmation. There is no latest-attempt, wildcard, or blind-confirm operation. Three wrong codes close the comparison; stale, expired, replayed, or cancelled attempts reject. Native and CLI confirmation share one atomic decision. Cancellation affects only the identified pending comparison.
+Inspection intentionally displays the active comparison and expiry. Treat that output as local pairing material. Confirmation reads the independently supplied phone comparison from stdin: one line, at most 128 bytes, with up to five minutes for input; Enter or piped EOF terminates it, and Ctrl+C cancels the owned input worker. This wait does not extend the original pairing window. Do not put the comparison in command arguments, logs, or shell history, and never automatically feed desktop inspection output into confirmation. There is no latest-attempt, wildcard, or blind-confirm operation. Three wrong codes close the comparison; stale, expired, replayed, or cancelled attempts reject. Native and CLI confirmation share one atomic decision. Cancellation affects only the identified pending comparison.
 
 After enrollment, start the phone's approval connection from the visible app with notifications enabled. Its nonexported foreground service has an ongoing Stop notification and bounded reconnect backoff. It is not boot-started or sticky. Phone process death/force-stop requires reopening and starting it. Sleep, Doze, OEM restrictions, or network loss can delay notifications; they do not extend approval deadlines.
 

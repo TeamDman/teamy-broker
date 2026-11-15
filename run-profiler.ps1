@@ -4,8 +4,7 @@ param(
 )
 
 if (-not $QueryArgs -or $QueryArgs.Count -eq 0) {
-	# TODO(template): replace the default profiled command below to match the generated project's command surface.
-	$QueryArgs = @("home", "show")
+	throw 'Supply the broker command to profile, for example: ./run-profiler.ps1 preview'
 }
 
 $profiler = Get-Command teamy-profiler -ErrorAction SilentlyContinue

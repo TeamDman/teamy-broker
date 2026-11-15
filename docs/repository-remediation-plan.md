@@ -4,13 +4,13 @@
 **Primary implementation root:** `teamy-broker/`, currently branch `main`
 **Last updated:** 2026-11-15
 **Intent audit:** Passed 2026-11-15 against the repository instructions and the full remediation request in this conversation
-**Current focus:** 1.3 checkpoint, followed by 2.3 runtime configuration and 3.1 production module ownership
+**Current focus:** Final integrated validation, package relocation and reviewed clean checkpoint (5.3)
 
-The immediate goal is a reviewed, coherent Git checkpoint. The larger goal is a broker whose supported workflows, module ownership, configuration and tests can be understood and maintained. Reviewing the pending diff alone cannot establish that larger outcome.
+The goal is a broker whose supported workflows, module ownership, configuration and tests can be understood and maintained, with a clean Git tree through reviewed commits. The initial pending migration was checkpointed in `2792563`; subsequent work reviews and repairs the whole repository.
 
 The user has authorized running this remediation to completion, including routine implementation decisions and coherent commits. Cleanup happens within each reviewed subsystem: trace supported behavior, repair and refactor it, remove confirmed obsolete material, validate and commit. Phase 5 is the final completeness audit, not the first opportunity to prune files. Material product or supported-functionality changes still need user direction. Deployment, publication and live phone trust changes remain separate.
 
-Parallel ownership: root owns runtime configuration and this plan; `broker_topology` owns production phone module extraction; `android_feasibility` owns the bounded portable-profile/JNI trial; `reference_patterns` owns startup/output contracts and repository tooling. The initial import repairs are complete. Heavy builds are coordinated by root, and unpublished trial artifacts stay under ignored `ignore/`.
+Parallel ownership: root owns integration, runtime configuration and this plan; `broker_topology` owns phone extraction and engine lifecycle repairs; `android_feasibility` owns Android, packaging, Windows persistence review and maintained documentation; `reference_patterns` owns typed CLI/output contracts, tooling and package verification. Implementation has converged; independent reviews and final validation are in progress. Heavy builds are coordinated by root, and unpublished trial artifacts stay under ignored `ignore/`.
 
 ## How to update this plan
 
@@ -83,9 +83,9 @@ Useful specific patterns:
 - Cloud Terrastodon `crates/app/src/app.rs:124` separates parsing from process startup; `crates/app/src/output/cli_output.rs:154` uses a supplied writer and checked flush. Its `AGENTS.md:70` documents cancellation-scope ownership and draining. Broker needs its own lifecycle decision before adopting these APIs.
 - Makepad `tools/cargo_makepad/src/android/compile.rs:348`, `:849`, `:1352` and `:1407` show Java bootstrap, Rust `cdylib`, Java compilation and D8 packaging. `tools/cargo_makepad/src/android/java/dev/makepad/android/MakepadNative.java:18` and `platform/hal/src/backend/android/jni.rs:108` show the Java/JNI platform boundary.
 
-## Established findings
+## Initial findings
 
-This is a planning audit, not a completed correctness or security review of every file.
+This table records the initial inspection, before implementation. Completion notes below describe the repairs and their evidence. The remediation is a maintainability and behavior review, not a comprehensive security audit.
 
 | Finding | Evidence | Consequence |
 | --- | --- | --- |
@@ -104,7 +104,7 @@ Before this plan was added, Git reported **33 changed tracked paths** and **48 u
 
 ## Scope, retained guarantees and open decisions
 
-The cleanup covers broker CLI/service, SDK, protocol/handoff code, Windows adapters, Android integration, pairing worker/build tooling, tests, examples and maintained documentation. Reference repositories remain references. New services, unrelated consumer changes, a general cross-platform desktop broker, deployment and publication are outside this planning request.
+The cleanup covers broker CLI/service, SDK, protocol/handoff code, Windows adapters, Android integration, pairing worker/build tooling, tests, examples and maintained documentation. Reference repositories remain references. New services, unrelated consumer changes, a general cross-platform desktop broker, deployment and publication are outside this remediation.
 
 Keep current documented boundaries until an explicit design decision changes them: exact-use approval and fixed leases; deny/cancel/expiry behavior; generation-safe cleanup; redacted diagnostics; no implicit provider fallback; separate enrollment and per-action credential authorization; and a cooperative same-user security boundary. Debug Android permits the explicit synthetic fixture, not ordinary credential use. Existing device acceptance is limited to the documented observations and does not qualify today's source. Cleanup must not silently broaden these guarantees or claim hostile-same-user isolation.
 
@@ -115,7 +115,7 @@ Keep current documented boundaries until an explicit design decision changes the
 | G3: Android architecture | Shared Rust core plus existing Android shell, Makepad UI/runtime, or retained Java platform layer with less duplicated logic? | Prefer Rust-owned shared rules when the trial proves a benefit. Zero Java and replacing the pinned UKEY2 implementation are separate, unproven goals. Decide after 4.1. |
 | G4: compatibility and dependency changes | Wire/profile/API compatibility policy, selected foundation/cancellation revisions, and distribution layout for pairing artifacts. | Keep explicit wire adapters initially. Compare capabilities and lifecycle behavior before upgrades. Installed binaries must not depend accidentally on a source checkout. Close each affected portion before 3.2, 3.3 or 4.2. |
 
-Working assumptions: Windows remains the primary broker target; supported Android workflows remain usable until G1/G3 decide otherwise; the SDK remains separate unless its consumers justify a change. These assumptions permit planning, not product retirement or a framework rewrite.
+Decisions: G1 retains the existing Windows product, separate SDK and documented phone workflows (2.1). G2 specifies runtime configuration and trust guards (2.2). G3 retains Java after the measured Rust trial (4.1). G4 retains protocol v2 and profile migration through explicit typed adapters, keeps cancellation 0.3.1 with owned completion/drain policy, and distributes Java artifacts beside the executable (3.2–4.2). No product retirement or framework rewrite was needed.
 
 ## Execution order
 
@@ -153,7 +153,7 @@ Review pending work → isolate validation → obtain a coherent clean checkpoin
 
 **Completion criteria:** Normal tests own their processes/endpoints/state, configuration regressions are executed by a maintained runner, and the suite runs whether the user's broker is present or absent. Remove the three temporary skips only after this is established.
 
-### [~] 1.3 Finish the pending migration and make coherent commits
+### [x] 1.3 Finish the pending migration and make coherent commits
 
 **Completion notes:** Rust listener binding, source admission and worker launch now share the verified profile; profile changes invalidate ongoing work. Snapshot regressions cover changed peer/JDK values, malformed and removed profiles. Android configuration uses committed SQLite rows with read-only legacy preference fallback, and rejects changed/missing settings while paired without clearing trust. Host tests cover policy/storage failures; Android device durability is unverified. Source compilation caught and fixed two lambda catch-name collisions in the pending Activity change.
 
@@ -167,11 +167,33 @@ Initial supported-surface decision (G1): preserve documented CLI, separate SDK, 
 
 **Validation:** Run V1 and V2 as relevant; run the existing `phone_profile` tests. Inspect `git diff --cached --check` and the complete staged diff for each commit, then validate the committed source, not only the larger dirty tree. After all reviewed groups are accounted for, `git status --porcelain=v1 --untracked-files=all` must be empty. Record commit IDs and any remaining limitation here.
 
-**Completion criteria:** A clean, reproducible checkpoint contains the retained work; no useful user work was lost. This is a prerequisite to the broader refactors, not completion of remediation.
+**Checkpoint:** `2792563` contains all retained original work, the initial repairs and cleanup. Its tracked build inputs match the passing validation above. Only named subsequent implementation work remained outside that checkpoint; there was no blanket reset/discard. The final tree must be clean after the later slices (5.3).
 
 ## Phase 2: define supported workflows and configuration
 
-### [ ] 2.1 Map the whole repository to supported behavior
+### [x] 2.1 Map the whole repository to supported behavior
+
+**Inventory and G1 decision:** Retain Windows 10/11 MSVC CLI/service and protocol-v2 SDK behavior, explicit per-action phone preview/credential authorization, the existing Android application identity and the pinned Java UKEY2 implementation. Android's declared/package floor is 29; source/host checks do not qualify device lifecycle or hardware keys. No product workflow was retired. Internal root-crate paths can move; SDK/wire compatibility remains explicit. Searches of the supplied CLI/Cloud Terrastodon and local LLM-service/Vox manifests found no broker dependency to migrate.
+
+| Owned tree | Entry roots and disposition |
+| --- | --- |
+| `src/main.rs`, `lib.rs`, entrypoint, logging, output, build/resources | CLI process boundary and executable metadata. Retain checked output, independent logging and early builtin parsing; remove unused `open` dependency, template cache helper and obsolete install script. |
+| `src/cli/`, app request/result/dispatch | All leaf commands remain discoverable directory modules. Move wire construction to adapters, keep conversion pure, add local config commands, and reject unsupported CSV before effects. |
+| Broker engine, approval/permission, leases, storage, server/session handlers | Daemon and SDK acquisition/control roots. Review native effects, ownership, cancellation and shutdown in 3.3; none exempted as unchanged code. |
+| `src/broker/phone/` | Resident actor, identity store, TLS and comparison state plus extracted config/tailnet/pairing owners. Preserve wire markers and trust identity. |
+| `src/broker/mobile_dummy/` | Synthetic adapter/approval/storage/bootstrap and loopback/TLS demonstrations only; no `serve` registration. Production helpers moved out; paired queue-serving code became test-only. |
+| `src/platform/` | SID/pipe security, DPAPI/cache, scheduler, detached launch and native approval presentation. Keep platform-specific operations behind owned adapters; platform review and regression work in 3.3. |
+| `src/protocol/`, `src/sdk/`, `sdk/` | Shared wire models, framing, provider selection, acquisition/cache/control and lease-aware secret handles. Preserve public protocol-v2 SDK; independent SDK all-target check passed. |
+| `handoff/` | Production pairing records/session crypto plus synthetic queue/broadcast interoperability. Keep independent protocol/race tests and correct the misleading dummy-only package description. |
+| `android/` | Activity, foreground service, config/identity storage, paired TLS, input/deadline/generation policy and host tests. Retain app ID for compatibility; trace legacy-only classes before pruning. |
+| `pairing/java/` | Official pinned engine, private worker, independent peer tests, source/dependency/license locks. Preserve provenance; fresh build staging prevents deleted classes surviving in JARs. |
+| Root scripts and resources | Validation, publication checks, lint fixtures, profiler and package assembly. Remove environment-based legacy launchers and redundant `update.ps1`; require explicit profiler command; preserve native manifest/resources. |
+| `tests/` and support | Contract, IPC, lifecycle, redaction and failure regressions. Keep independent behavior evidence and explicitly ignored native tests; isolate subprocesses/endpoints. New tests target confirmed failure modes. |
+| Documentation | Eight maintained topics after folding completion budgets into logging. This plan owns execution history; raw receipts and obsolete plans are preserved locally, outside the public tree. |
+
+The final 10 example roots have concrete roles: `synthetic_broker`, `synthetic_autostart_consumer`, `synthetic_op_wait`, `synthetic_logging_cli` and `synthetic_preview_resident` are subprocess fixtures; `mobile_tls_probe` supports maintained JVM loopback checks; `synthetic_consumer` demonstrates SDK selection; `synthetic_credential_resident` is explicit synthetic phone acceptance; `broker_attention_dummy` and `synthetic_dpi_dialog` diagnose native presentation. None is registered as an ordinary CLI command. The preliminary inventory retained five additional legacy mobile/pairing diagnostics by name; the final caller and invocation audit in 5.1 found them obsolete and removed them. Their useful protocol/race coverage remains in independent tests.
+
+Capability comparison completed against R2/R5/R6: parser/help, build identity, process setup, checked result output, independent append logging, cancellation, module naming, strict lints and fixture ownership. Broker's stronger sink isolation was retained; template code was not copied wholesale. Pinned cancellation 0.3.1 supplies the needed token/handler controls; its raw ANSI Ctrl+C output was disabled without an unrelated upgrade.
 
 **Work:** Close G1. Start with `main` → entrypoint → CLI → dispatch → server/SDK, then enumerate the SDK public API, Android Activity/service, Java worker, Cargo build scripts/targets, scheduler cleanup entrypoint, examples and test harnesses. For every first-party module, test and example, record owner, callers, purpose and disposition. Check known local consumers before changing exported SDK/wire behavior. Classify manual probes separately from automated fixtures. Include unchanged credential engine, storage and Windows code in the review inventory.
 
@@ -181,17 +203,33 @@ Build a capability matrix against R2/R5/R6: typed parser/help, build identity, p
 
 **Completion criteria:** Every owned subsystem has a review/disposition entry, and the supported-surface/target matrix has an explicit decision for every currently advertised workflow. No large unchanged subsystem is exempted because the diff did not touch it.
 
-### [ ] 2.2 Specify configuration ownership and effects
+### [x] 2.2 Specify configuration ownership and effects
+
+**Decision (G2):** `phone-configure`, `phone-config-show` and `phone-config-validate` use the existing application home, with an explicit absolute `--app-home` override. The override selects profile storage only; protected enrollment identity retains its existing per-user location. Configure takes all seven ordinary settings as named CLI arguments. It validates typed fields and Java availability, then owns the same first named-pipe instance used by the daemon throughout identity inspection and atomic profile replacement. The daemon must be stopped. A corrupt identity is an error, never evidence that no relationship exists. Configure never enrolls, revokes, starts the service or contacts a peer.
+
+| Situation | Result and state effect | Verification |
+| --- | --- | --- |
+| Missing profile, no enrolled identity | Configure writes schema 1 through a synced temporary file and atomic replacement; start `serve` explicitly afterward. | Runtime replacement test with a temporary home and isolated pipe. |
+| Invalid input or missing Java executable | Error before publication; previous profile and trust remain. | Typed parsing and unavailable-Java tests. |
+| Running daemon or concurrent writer | First-instance acquisition fails; no profile publication. | Existing isolated pipe held during configure. |
+| Enrolled identity, identical profile | Successful no-op; stored identity and original profile bytes remain. | Protected synthetic identity test. |
+| Enrolled identity, changed or missing profile | Reject; explicitly revoke, stop, configure, start and pair to change the relationship. JDK changes follow the same conservative rule. | Changed/missing profile tests; no live trust changes. |
+| Interrupted or failed replacement | Existing complete profile remains; normal failure removes the temporary file. A crash may leave an inert uniquely named temporary file. | Locked-destination failure test and atomic publication review. |
+| Legacy profile read | Upgrade in memory only. Explicit configure writes the current schema when unpaired. | Existing v0/v1 migration tests and configure regression. |
+| Show/validate | No daemon connection or trust write. Show reports readiness and redacts values unless `--show-values`; validate also requires the configured Java file to exist. Neither claims network/peer connectivity. | Redaction and explicit-disclosure tests. |
+| Profile changes outside CLI during active work | Existing snapshot checks stop the current listener/workers. Manual file edits are outside the supported configure workflow; use the stopped-daemon commands for trust-safe changes. | Existing peer/JDK/invalid/deleted snapshot regressions. |
 
 **Work:** Close G2 with exact discoverable CLI flags and typed request/result models. Choose profile location ownership, bounded validation, atomic replacement/recovery behavior and migration persistence. Reading should retain the current no-rewrite behavior unless deliberately changed. Decide whether a running listener reloads safely or requires an explicit apply/restart, and how existing certificate/trust identity relates to a changed peer profile. Audit the separate loads in `phone/resident.rs` and `mobile_dummy/java_pairing_worker.rs`; define one consistent configuration snapshot for each operation.
 
-Candidate command vocabulary is `phone-configure`, `phone-config-show` and `phone-config-validate`, matching current flat phone verbs. These names are proposals, not available commands. Ordinary peer/JDK settings must be available as Figue arguments; a JSON import may remain optional. Define redacted results and safe diagnostics without echoing private values by default.
+The selected vocabulary matches existing flat phone verbs. JSON remains the versioned storage format; direct file editing is not the supported configuration-management interface.
 
 **Validation:** Walk through missing/invalid profile, valid initial setup, v0/v1 inputs, unsupported version, settings change during pairing, enrolled peer replacement, interrupted write and stale listener cases. Map each to expected CLI result, disk effect, listener/trust effect and test layer. Inspect generated leaf-help support before promising help content.
 
 **Completion criteria:** A written behavior table resolves all G2 decisions and names tests; configuration management is distinguishable from enrollment and credential authorization. Existing grants cannot silently move to a new peer.
 
-### [ ] 2.3 Implement runtime configuration through the CLI
+### [x] 2.3 Implement runtime configuration through the CLI
+
+**Completion notes:** Added three directory-module commands and typed request/action/report/value/error files under `phone/config`. Validated inputs are converted before effects; configure holds daemon exclusion across protected identity inspection and synced atomic replacement. Six focused operation tests cover two successive runtime profiles with one executable, redaction/disclosure, paired no-op and rejection, corrupt trust, missing Java, active daemon exclusion and failed-write preservation. Parser contracts cover all seven settings and reject invalid combinations; serialization cannot exceed the reader's 8,192-byte limit. Revoked identities receive a fresh enrollment identity, preventing old address bindings from surviving reconfiguration. These tests pass in the combined 256-test workspace suite; final packaged leaf-help checks are recorded in 5.3. Removed the obsolete environment launchers. Android runtime save/pairing guards have host-policy coverage; device qualification remains separate.
 
 **Work:** Implement the agreed commands in individual `src/cli/<command>/teamy_broker_<command>_cli.rs` files with `mod.rs` re-exports. Move configuration ownership out of synthetic modules. Keep versioned schema decoding, meaningful peer/JDK types and invariant checks; tighten ownership where public mutation can create invalid combinations. Add domain operations for validate/load/save/apply as selected in 2.2, then wire CLI and service to them. Retire the legacy environment helper only after identifying its callers and migration path.
 
@@ -201,7 +239,9 @@ Candidate command vocabulary is `phone-configure`, `phone-config-show` and `phon
 
 ## Phase 3: repair ownership and review core behavior
 
-### [ ] 3.1 Separate live phone components from fixtures
+### [x] 3.1 Separate live phone components from fixtures
+
+**Completion notes:** Initially moved 34 files into `phone/config` (10), `phone/tailnet` (6) and `phone/pairing` (18), migrated every caller and removed old aliases. Task 5.1 subsequently removed obsolete probe/activation helpers from that set. New configuration operations join their owning module. Synthetic paired-queue and temporary preview code is test-only. `Controller`, `PreviewHub`, `RuntimeGuard` and the runtime entrypoint now have dedicated files; `phone/mod.rs` contains declarations, constants and reexports. Public entry paths remain stable. The final 10 examples compile; combined Rust tests pass, including pairing/SDK loopback, snapshot/revocation and handoff interoperability. Android application identity and wire markers remain unchanged. The remaining `mobile_dummy` module owns synthetic adapters and fixtures only.
 
 **Work:** Move configuration, exact-peer policy, enrollment worker adapters and resident transport helpers into clearly named phone modules. Keep UKEY2 and current transport behavior while moving code. Separate synthetic queue/session/adapters into deliberate test/example support based on 2.1. Review `handoff` ownership: production pairing types and synthetic secret/constants currently share a crate. Choose a small shared module/crate boundary only where its consumers justify it. Fix misleading comments as each move lands.
 
@@ -209,7 +249,9 @@ Candidate command vocabulary is `phone-configure`, `phone-config-show` and `phon
 
 **Completion criteria:** Live phone behavior has production ownership and discoverable names; remaining dummy names describe genuinely synthetic behavior. Android package/application IDs, component names, signer and stored identity are unchanged by a Rust module move. Any later Android rename needs G3/G4 migration evidence.
 
-### [ ] 3.2 Establish typed operations and results one command at a time
+### [x] 3.2 Establish typed operations and results one command at a time
+
+**Completion notes:** All commands now convert to closed `AppRequest` operations with distinct lease/attempt IDs, purge scope and authorization modes; `AppResult` owns domain outcomes. Dispatch imports no CLI presentation type. The CLI alone renders results and chooses completion policy. Wire adapters retain protocol v2 and exact accepted identifier spelling. Unsupported CSV fails before log creation, stdin input or dispatch; flat/empty supported results retain CSV. Read-only calls cancel their owned exchange; mutations await bounded responses, and confirmed success is still rendered if Ctrl+C races that response. Five focused dispatch regressions plus parser, IPC, failure and output suites pass. The existing five-second pairing-input budget remains explicit and cancellable. No dependency upgrade was needed to express this ownership.
 
 **Work:** Close G4's wire/API compatibility policy. Start with redacted phone status: CLI arguments → typed request → operation → typed domain report → CLI renderer. Move `CliOutput` ownership out of broker operations. Let argument types own their conversions when appropriate. Introduce distinct attempt/lease/request identities and closed operation types where they prevent current confusion; keep explicit wire conversion to preserve accepted protocol versions. Split large type-bearing `mod.rs` files, including phone `Controller`, into discoverable files with inherent implementations beside their types. Extend the proven pattern across the command set.
 
@@ -217,7 +259,21 @@ Candidate command vocabulary is `phone-configure`, `phone-config-show` and `phon
 
 **Completion criteria:** Broker operations no longer construct CLI presentation objects; request identities cannot be confused through a reused lease-ID slot inside domain code; every supported command has a reviewed conversion and result path. On-wire changes are intentional and tested.
 
-### [ ] 3.3 Review engine, lifecycle and platform effects
+### [x] 3.3 Review engine, lifecycle and platform effects
+
+**Completion notes:** The whole-subsystem review covered the following invariants and repairs. New regressions pass in the combined Rust suite; native execution is separately recorded in 5.3.
+
+| Reviewed subsystem | Outcome and evidence |
+| --- | --- |
+| Acquisition, approval and provider arbitration | Retained exact-use/fixed-deadline semantics, one winning supply/provider, fail-closed stale/replayed authorization and owned provider-process cancellation. Existing contract and phone race tests pass. |
+| Storage publication and grant handoff | Reproduced status blocking during native publication, then moved effects to tracked blocking workers. Workers retain the acquisition gate and rollback responsibility through explicit handoff acknowledgement. Cancellation, expiry, revocation, purge and abandoned delivery cannot grant a stale lease. Controlled blocking regressions prove responsiveness and exact-generation rollback. |
+| Retirement, shutdown and server maintenance | Schedule tracked retirement under the short state lock, drain on purge-all/forced shutdown, retain failed zeroized metadata for retry, and keep maintenance outside the accept loop. Regressions cover blocked cleanup, canceled purge, unreceived handoff, listener recreation failure and shutdown draining. |
+| Windows persistence | Descriptor publication precedes scheduler registration. Partial secret staging has a deterministic opaque generation owner; collision preflight preserves foreign files. Cleanup removes only that generation, retaining recovery metadata when removal fails. Synthetic regressions cover interrupted staging and retry. Token/process/thread handles use `windows::core::Owned<HANDLE>`. |
+| SDK, protocol and process ownership | Preserved public protocol-v2 APIs, fail-closed cached reads, fixed monotonic lease bounds, autostart race handling, non-inherited output handles and independent SDK dependency compilation. Existing IPC, EOF, expiry and cancellation suites pass. |
+| Phone, Android and secret buffers | Independent review covered protected identity/generation checks, listener snapshots, revocation, bounded framed input, durable settings/selection, Keystore ownership and buffer clearing. Retained host tests and new profile guards pass; hardware/UI evidence remains explicitly limited. |
+| Foundation and dependencies | Kept cancellation 0.3.1 after comparing required behavior, disabled unsolicited ANSI handler output and made completion ownership explicit. Removed unused `open` and its transitive dependencies. All three package feature/lint/license boundaries are checked independently where relevant. |
+
+Startup reconciliation intentionally completes before the daemon reports ready. The responsiveness guarantee applies to a running service; this remediation does not claim cancellation can interrupt an arbitrary Windows API call. Worker draining prevents successful shutdown from concealing that unfinished work.
 
 **Work:** Use 2.1's inventory to review credential acquisition/approval, provider arbitration, caching, lease deadlines, cleanup/persistence, SDK autostart and process ownership, Windows handles/UI, phone revocation and secret buffers. Record each subsystem's invariant, concrete issues, bounded repair and proof. Review human interaction budgets separately from transport/shutdown timeouts, including the current five-second pairing-confirm stdin read. Preserve resource ownership, generation safety and committed state under cancellation.
 
@@ -229,7 +285,13 @@ Close G4's foundation/cancellation choice independently of module movement. Brok
 
 ## Phase 4: evaluate and implement Rust Android ownership
 
-### [ ] 4.1 Run a bounded shared-Rust trial
+### [x] 4.1 Run a bounded shared-Rust trial
+
+**Decision and evidence (G3):** Retain the production Java boundary. An ignored zero-dependency Rust profile component plus JNI 0.21.1 adapter passed 50 parity cases, 10,000 host-JVM calls under `-Xcheck:jni`, and four Rust tests. Rust 1.96.0 and an existing Makepad NDK Clang 14.0.7/API 33 sysroot built an ARM64 library: 307,344 bytes, expected JNI export, `libc.so`/`libdl.so` dependencies and 16 KiB LOAD alignment. The trial needed only the Android Rust standard-library target; reference repositories were unchanged. Commands, lockfile and artifact evidence remain under ignored `ignore/android-rust-trial/`.
+
+Sharing two small syntax rules would add a native loader, ABI packaging, JNI failure policy and device qualification without enough benefit. The temporary production crate/dependency/wrapper integration was removed; no unused Rust Android scaffolding ships. Java retains lifecycle/UI, Keystore/TLS integration and independently pinned UKEY2 ownership. The trial did not execute on Android and does not qualify API 29, ART, hardware keys or lifecycle behavior. A larger future shared protocol/state component would need that evidence before adoption.
+
+AAPT2 manifest probes showed minimum SDK 29 with the old flag 26, no override and aligned flag 29; the manifest already won. Packaging now reads that declaration for D8 and AAPT2. Current Java/D8 compilation at that declared floor passed; hardware/runtime support remains unqualified.
 
 **Work:** Extract one pure behavior, preferably profile validation or a protocol/state transition, into a platform-neutral Rust component with an Android-callable boundary. Compare shared Rust plus the current Android shell with a small Makepad integration only if its UI/runtime capabilities solve a named broker need. Retain existing algorithms, pairing/trust behavior and package identity during the trial. Root broker's Windows-only crate is not the shared component. Keep replacement of the desktop Java UKEY2 worker as a separate interoperability/cryptography decision.
 
@@ -237,7 +299,9 @@ Close G4's foundation/cancellation choice independently of module movement. Brok
 
 **Completion criteria:** Close G3 with measured implementation/build costs and named parity gaps. Choose shared Rust with adapters, Makepad, or a justified retained Java layer. A compiled sample alone does not justify a rewrite, and an infeasible trial is a useful recorded outcome.
 
-### [ ] 4.2 Apply the selected Android boundary in reviewable slices
+### [x] 4.2 Apply the selected Android boundary in reviewable slices
+
+**Completion notes:** Retained Java ownership and compatibility identity; runtime settings/paired guards were repaired in the first checkpoint. Fresh per-run Java/APK staging and build receipts passed stale-class and compiler-failure checks, preserving previous outputs on failure. The package helper verifies build/source/dependency/license hashes, rejects existing destinations and emits only relative hash metadata. Production resolves artifacts from the executable's sibling `pairing/` directory. A fresh 16-artifact package was moved to a second directory and tested from an unrelated working directory: root/version and all config leaf help passed, and the relocated test harness started the real Java worker, received initialization acknowledgment and reaped it. No source-tree artifacts were used by that worker. Removed unused Android protocol/crypto/bootstrap classes and unreachable legacy pairing paths; moved legacy pinned-TLS support under host tests. Android host tests and production Java/D8 compilation pass. No installation or live trust changes occurred; device lifecycle/hardware qualification remains outside this host remediation.
 
 **Work:** Follow G3; migrate shared rules incrementally where the trial supports it. Define Android adapters for lifecycle, foreground service/notifications, Keystore, TLS/signing, input and cancellation. Keep one domain meaning across desktop/phone, while preserving platform-owned key handling and explicit user start/stop. Decide G4's worker distribution layout so installed broker runs without `CARGO_MANIFEST_DIR`/source-tree artifact assumptions. If Java remains, document exactly which responsibilities justify it and remove only duplicated logic replaced by the shared component.
 
@@ -247,7 +311,11 @@ Close G4's foundation/cancellation choice independently of module movement. Brok
 
 ## Phase 5: audit cleanup completeness and qualify the result
 
-### [ ] 5.1 Prune code, examples and tests using the inventory
+### [x] 5.1 Prune code, examples and tests using the inventory
+
+**Progress:** Removed obsolete template cache/shape helpers, two obsolete example targets and unused pairing helpers, the retired phone generator/test scripts, legacy environment launchers and install shortcut, unused Android protocol/bootstrap/crypto paths and their obsolete test, and the unused `open` dependency. Moved live phone files to their production owners and synthetic paired-queue/TLS code to test support. Historical Android package names are retained compatibility identity, not unused code.
+
+**Completion notes:** The final invocation audit challenged the preliminary 15-example inventory. Removed `pairing_transport_delay_probe`, `synthetic_pairing_dialog` and `mobile_preview_pairing`: they had no maintained peer, launcher or receipt generator. Also removed `mobile_handoff_desktop` and `mobile_handoff_tailnet`, whose session-key bootstrap and queue UI predate the current Android peer; their local desktop completion duplicated retained current fixtures. Removed exclusively owned activation/probe/bootstrap/broadcast UI helpers and unused ambient-profile wrappers. Independent deadline/cancellation/native-presentation and authenticated-preview interoperability tests remain, with legacy preview support compiled only for tests. Synthetic TLS is confined to loopback; production retains typed exact-peer admission. This last group removed 14 files and reduced Rust source by a net 1,466 lines, including the new pure loopback-policy regression. Cargo metadata confirms three workspace packages and 10 example roots. Strict checks, all example builds and the final combined suite pass; caller searches find no obsolete entrypoint references outside this plan and ignored history.
 
 **Work:** Perform removals during the subsystem slices as U18 directs, then use this task to check every remaining candidate from 2.1. Keep essential subprocess fixtures such as `synthetic_broker`, `synthetic_autostart_consumer` and `synthetic_op_wait` until their harnesses are deliberately replaced. Move useful manual diagnostics to a discoverable location with purpose and invocation; remove obsolete experiments and unused dependencies. Consolidate tests by the user-visible behavior or failure they prove, not by age or LLM origin. Retain independent interoperability, race, lifecycle and regression evidence.
 
@@ -255,7 +323,9 @@ Close G4's foundation/cancellation choice independently of module movement. Brok
 
 **Completion criteria:** Every retained example/test/module serves a supported workflow, regression or named diagnostic purpose; every removed surface has evidence and any needed compatibility treatment. A search returning no direct Rust caller is insufficient on its own.
 
-### [ ] 5.2 Consolidate maintained documentation and historical decisions
+### [x] 5.2 Consolidate maintained documentation and historical decisions
+
+**Completion notes:** Eight documents remain under `docs`, including this execution plan. README owns the entry route and source ownership; phone approvals owns configuration, enrollment, package layout and recovery; protocol/threat model own wire and security boundaries; logging/shutdown own their behavior; mobile handoff owns pairing provenance and fixture roles; validation owns evidence limits. Folded useful completion-budget notes into logging and removed the duplicate document. Preserved 36 original historical evidence files locally with exact hashes, removed 35 public copies and retained source/dependency/license provenance. Current command help, all 17 subcommand file/reexport arrangements, relative file/heading links, package ownership, paired configuration rules and shutdown semantics have been reviewed. The four manual examples have actual invocations and prerequisites; the six subprocess helpers link to their owning runners. Corrected the stdout contract to acknowledge explicitly requested profile/comparison disclosure. Final publication scanning passed across 419 current text files, eight rules and all three package licenses.
 
 **Work:** Keep a short maintained entry route: README for purpose/quick start, architecture/module ownership, configuration/phone operations, protocol/threat model, and validation/support limits. Reuse existing files where suitable. Fold still-valid decisions into the owning topic; retain only historical evidence needed to explain a decision or unresolved limit, with date/revision/status. Review `docs/archive`, mobile receipts, TLS evidence and SDK-license evidence individually; preserve required license/provenance material. Remove stale current-runbook links and old operational approval/state claims. Move private device receipts to an explicitly selected local location or redact them; do not invent a storage destination or duplicate their values here.
 
@@ -263,7 +333,11 @@ Close G4's foundation/cancellation choice independently of module movement. Brok
 
 **Completion criteria:** One discoverable document owns each operational topic; current instructions agree with code; historical receipts cannot be mistaken for current state or permission. The remediation plan remains the living execution record rather than spawning competing plans.
 
-### [ ] 5.3 Complete workflow acceptance and final clean checkpoint
+### [~] 5.3 Complete workflow acceptance and final clean checkpoint
+
+**Progress:** After final pruning, the maintained `check-all.ps1` passed end to end: exact publication policy fixtures and scan, nightly formatting, all-target/all-feature strict Clippy, independent SDK compilation, both 14-case lint suites, 58 pinned Java tests, Android host policies, all 10 example builds, JVM/Rust TLS, executable manifest and the full workspace suite (255 passed, zero failed, five explicitly ignored). This supersedes the pre-pruning 256-test run. The changed count reflects removed obsolete activation behavior and retained/new fixture-policy coverage. The pure scheduler classifier regression is included. Relocation proof separately passed the ignored package-worker test before the last fixture pruning; a committed-source package check follows the checkpoint. Raw logs and hash receipts remain under ignored remediation validation evidence.
+
+The separately selected three native persistence tests exposed an actual missing-task inspection failure after task cleanup. PowerShell maps the missing COM HRESULT to a `FileNotFoundException` inside `MethodInvocationException`; the classifier accepted only `COMException`. The bounded repair accepts that exact mapped/wrapped case only around exact task operations, retaining other-error rejection. Its pure regression passes. Automatic approval review rejected the native rerun because it required explicit user authorization for scheduler/credential effects; that authorization is pending. No alternate native diagnostic was run after rejection. The private-desktop/emulator test remains unrun. Final commits and clean-tree verification follow the approved native resolution or an explicit decision to leave that acceptance unverified, plus the last obsolete-example removal.
 
 **Work:** Exercise the declared supported workflows through the CLI, SDK and selected Android integration. Record source revision, commands, target/build identity and observation limits. Verify distribution from outside the source checkout, including required pairing artifacts. Update documentation and this plan, then commit the reviewed result in coherent slices. Any installation, daemon replacement, signing, publication or device trust operation is a distinct concrete action; planning/source cleanup does not imply it occurred.
 
@@ -273,7 +347,7 @@ Close G4's foundation/cancellation choice independently of module movement. Brok
 
 ## Validation commands and target matrix
 
-Run from broker root with pre-existing Rust/Java dependencies. Use the current source tree and isolated temporary state. Serialize heavy builds. On disk-space errors, wait for the user. Commands below are planned validation unless 0.1 explicitly records their execution.
+Run from broker root with pre-existing Rust/Java dependencies. Use the current source tree and isolated temporary state. Serialize heavy builds. On disk-space errors, wait for the user. Task completion notes, particularly 5.3, record current execution; the initial 0.1 baseline is historical.
 
 **V1: Rust baseline.** Build example fixtures before the suite. Logging tests now own their endpoints, so no temporary logging skips are needed. Ignored native/device tests remain excluded from the normal suite.
 
@@ -298,14 +372,14 @@ cargo build --offline -p teamy-broker --example mobile_tls_probe
 ./android/check-tailnet-transport.ps1
 ```
 
-| Target/workflow | Current planning status | Required proof before qualification |
+| Target/workflow | Current acceptance status | Remaining limits |
 | --- | --- | --- |
-| Windows CLI and resident broker | Existing product; current build/test health unverified | Help/version and output isolation; source-built CLI/IPC flows; approval/lease/cancel/recovery tests; no source-tree runtime dependency. |
-| Windows SDK and known consumers | Existing public surface; source-sharing layout | Compatibility and consumer compilation; isolated acquisition/autostart/cleanup; EOF and daemon ownership tests. |
-| Current Java UKEY2 and Android host logic | Existing adapters; tests not run in this audit | Official-peer/interoperability and malformed/replay tests; runtime-profile test included; host lifecycle/policy tests. |
-| Android debug/release packages and selected device/API/ABI | Existing workflows; support floor and release acceptance require G1/G3 decisions | Inspect packaged metadata/signing; configuration without rebuild; lifecycle, notifications, key policy and enrollment recovery on chosen target. Debug stays synthetic-only. |
-| Native Windows storage/Task Scheduler/UI and live credential/phone workflows | Separate effectful or interactive acceptance | Reviewed isolated native tests (`cargo test --offline --test native_backend -- --ignored --test-threads=1`) when selected; human-observed UI/device behavior; chosen live credential scope. Host tests are insufficient. |
-| New shared-Rust Android component | Proposed; no implementation or support claim | Selected ABI compile, cross-language fixtures and device-boundary evidence from 4.1–4.2. |
+| Windows CLI and resident broker | Strict checks and all automated host contracts pass; package relocation and real worker initialization pass | Interactive approval, real 1Password authorization and deployment were not performed. |
+| Windows SDK and known consumers | Independent SDK check, consumer/example compilation, IPC/autostart/EOF/cleanup/expiry contracts pass | No external consumer deployment or live credential acquisition. |
+| Current Java UKEY2 and Android host logic | 58 independent pinned-engine tests, Android host policies and JVM/Rust TLS pass | Host tests do not qualify ART, hardware keys, Android UI or background delivery. |
+| Android packages and device/API/ABI | Production Java/D8 compilation and manifest floor 29 inspected; fresh staging/failure preservation checked | Current source was not installed on a physical device. Release signing, lifecycle/notifications, recovery and actual API 29 runtime need separate device acceptance. Debug remains synthetic-only. |
+| Native Windows storage/Task Scheduler | Three isolated tests exposed missing-task inspection failure; repair passes pure regression | Explicit authorization requested after automatic approval review rejected native rerun. Exact owned cleanup/rerun remain unverified. Native UI/live credential scope remains separate. |
+| Rust Android feasibility | Host parity/JNI repetition and ARM64 API 33 compile passed; production integration deliberately rejected | Trial was not run on Android and creates no shipped Rust Android support claim. |
 | Other desktop platforms | Root crate explicitly Windows-only | No support expansion implied. Any portability work requires its own decision. |
 
 ## Risks and controls
@@ -323,7 +397,7 @@ cargo build --offline -p teamy-broker --example mobile_tls_probe
 ## Overall completion criteria
 
 - [ ] Existing work is accounted for and the final Git working tree/index are clean through reviewed commits, with no lost changes or private evidence accidentally published.
-- [ ] Every owned subsystem has been reviewed against supported workflows and TeamyStyle; retained deviations have concrete reasons and evidence.
-- [ ] CLI configuration is discoverable and works without rebuilding; production phone ownership is clear; SDK, daemon and Android adapters share the intended domain semantics.
-- [ ] The selected Android approach has recorded feasibility/parity evidence; obsolete code, examples, tests and documentation have reasoned dispositions.
+- [x] Every owned subsystem has been reviewed against supported workflows and TeamyStyle; retained deviations have concrete reasons and evidence.
+- [x] CLI configuration is discoverable and works without rebuilding; production phone ownership is clear; SDK, daemon and Android adapters share the intended domain semantics.
+- [x] The selected Android approach has recorded feasibility/parity evidence; obsolete code, examples, tests and documentation have reasoned dispositions.
 - [ ] Maintained docs and acceptance results agree with the current source revision. Unverified targets and interactive limits remain explicit, and no required remediation work is silently marked complete.

@@ -30,14 +30,9 @@ impl TlsIdentity {
     /// # Errors
     /// Returns a redacted error on synthetic key, certificate or TLS configuration failure.
     pub fn random() -> eyre::Result<Self> {
-        Self::for_address(Ipv4Addr::LOCALHOST)
-    }
-    /// # Errors
-    /// Returns a redacted error on synthetic key, certificate or TLS configuration failure.
-    pub fn for_address(address: Ipv4Addr) -> eyre::Result<Self> {
         let key = KeyPair::generate()
             .map_err(|_redacted_error| eyre::eyre!("dummy TLS key unavailable"))?;
-        let mut params = CertificateParams::new(vec![address.to_string(), "127.0.0.1".into()])
+        let mut params = CertificateParams::new(vec![Ipv4Addr::LOCALHOST.to_string()])
             .map_err(|_redacted_error| eyre::eyre!("dummy TLS parameters unavailable"))?;
         let now = time::OffsetDateTime::now_utc();
         params.not_before = now - time::Duration::minutes(1);

@@ -14,7 +14,7 @@ public final class TlsTest {
             socket.connect(new InetSocketAddress("127.0.0.1", Integer.parseInt(args[0])), 3000);
             socket.setSoTimeout(3000); ((SSLSocket)socket).startHandshake();
             if (rejected) throw new AssertionError("Wrong pin accepted");
-            byte[] value = DummyPolicy.VALUE.getBytes(StandardCharsets.UTF_8);
+            byte[] value = "TEAMY-DUMMY-ONLY".getBytes(StandardCharsets.UTF_8);
             DataOutputStream out = new DataOutputStream(socket.getOutputStream());
             out.writeInt(value.length); out.write(value); out.flush();
             DataInputStream in = new DataInputStream(socket.getInputStream());

@@ -435,8 +435,11 @@ fn preview_shape_cannot_supply_a_reference_or_lease_and_cli_requires_explicit_ui
         .into_result()
         .unwrap()
         .value;
-        assert!(
-            matches!(cli.command.into_request().unwrap(),AppRequest::Preview(show) if show==expected)
-        );
+        let request = cli.command.into_request().unwrap();
+        assert!(match request {
+            AppRequest::ApprovalPreview => expected,
+            AppRequest::PreviewProposal => !expected,
+            _ => false,
+        });
     }
 }

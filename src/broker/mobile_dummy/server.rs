@@ -1,3 +1,4 @@
+use crate::broker::phone::pairing::packet::Packet;
 use crate::protocol::wire;
 use std::sync::Arc;
 use std::time::Duration;
@@ -37,7 +38,7 @@ pub(super) async fn exchange<S: AsyncRead + AsyncWrite + Unpin>(
     socket: &mut S,
     queue: &Queue,
 ) -> eyre::Result<()> {
-    let packet: super::packet::Packet = wire::read(socket).await?;
+    let packet: Packet = wire::read(socket).await?;
     let result = match packet.operation.as_str() {
         "poll" => queue.poll(&packet.envelope)?,
         "submit" => queue.submit(&packet.envelope)?,

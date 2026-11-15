@@ -1,6 +1,5 @@
 use crate::broker::approval::Approval;
 use crate::broker::work_guard::WorkGuard;
-use crate::broker::work_kind::WorkKind;
 use crate::protocol::AcquireRequest;
 use crate::protocol::FailureKind;
 use crate::protocol::wire;
@@ -14,7 +13,6 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use teamy_broker_handoff::binding::Binding;
 use teamy_broker_handoff::queue::Queue;
-use tokio::task;
 use tokio::time;
 use tokio::time::Instant;
 pub struct MobileDummyApproval {
@@ -33,34 +31,22 @@ impl Approval for MobileDummyApproval {
         cancel: Arc<AtomicBool>,
         work: WorkGuard,
     ) -> Pin<Box<dyn Future<Output = eyre::Result<bool>> + Send + 'a>> {
-        approve_request(Arc::clone(&self.queue), request, pid, cancel, work, false)
+        approve_request(Arc::clone(&self.queue), request, pid, cancel, work)
     }
 }
-pub(super) fn approve_request<'a>(
+fn approve_request<'a>(
     queue: Arc<Queue>,
     request: &'a AcquireRequest,
     pid: u32,
     cancel: Arc<AtomicBool>,
     work: WorkGuard,
-    desktop: bool,
 ) -> Pin<Box<dyn Future<Output = eyre::Result<bool>> + Send + 'a>> {
     Box::pin(async move {
-        let approval_work = work;
+        let _approval_work = work;
         eyre::ensure!(*request == super::request(), "dummy request required");
         let now = wire::unix_ms()?;
         let binding = Binding::dummy(pid, now)?;
         let (id, mut receiver) = queue.enqueue(binding.clone())?;
-        if desktop {
-            let state = super::desktop_prompt_state::DesktopPromptState {
-                queue: Arc::clone(&queue),
-                binding,
-                work: approval_work.phase(WorkKind::Approval),
-            };
-            // Errors/dismissal of the optional desktop prompt do not cancel the phone request.
-            let _desktop = task::spawn_blocking(move || {
-                let _ = super::desktop_prompt::show(&state);
-            });
-        }
         let guard = super::pending_guard::PendingGuard {
             queue: Arc::clone(&queue),
             id,

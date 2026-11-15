@@ -1,0 +1,13 @@
+[
+  {
+    "File": "protobuf-LICENSE",
+    "Source": "https://raw.githubusercontent.com/protocolbuffers/protobuf/v25.9/LICENSE",
+    "SHA256": "6E5E117324AFD944DCF67F36CF329843BC1A92229A8CD9BB573D7A83130FEA7D"
+  },
+  {
+    "File": "jsr305-LICENSE",
+    "Source": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+    "Declaration": "https://repo.maven.apache.org/maven2/com/google/code/findbugs/jsr305/3.0.2/jsr305-3.0.2.pom",
+    "SHA256": "CFC7749B96F63BD31C3C42B5C471BF756814053E847C10F3EB003417BC523D30"
+  }
+]

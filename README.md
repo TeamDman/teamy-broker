@@ -16,9 +16,23 @@ cargo build --workspace --release
 .\target\release\teamy-broker.exe stop
 ```
 
-`status` does not autostart and reports redacted work, approval, cache and cleanup counts plus shutdown safety; see [shutdown status](docs/shutdown-status.md). Purge requires exactly one of `--lease-id` or `--all`. `stop` atomically refuses while work, cached leases or pending cleanup remain. `stop --force` explicitly authorizes cancellation and removal of broker-owned leases; both wait for the endpoint to disappear. Purge invalidates pending acquisitions as well as active leases. Internal `cleanup --lease-id OPAQUE_UUID` is the scheduled task entry point; it accepts no secret, item reference, or path argument.
+`status` does not autostart and reports redacted work, approval, cache and cleanup counts plus shutdown safety; see [shutdown status](docs/shutdown-status.md). Purge requires exactly one of `--lease-id` or `--all`. `stop` atomically refuses while work, cached leases or pending cleanup remain. `stop --force` explicitly authorizes cancellation and removal of broker-owned leases; both wait for the endpoint to disappear. `purge --all` also invalidates acquisitions already pending when it begins. Internal `cleanup --lease-id OPAQUE_UUID` is the scheduled task entry point; it accepts no secret, item reference, or path argument.
 
 Configure the official 1Password CLI desktop integration yourself before using real items. The default executable is `op.exe` resolved through PATH; an explicit executable path avoids PATH ambiguity. The broker invokes only `op read --account ACCOUNT --no-newline ITEM_FIELD_REFERENCE`, with stdin closed, stderr discarded, bounded secret output, a two-minute read deadline, and child termination on cancellation. Service-account, Connect and inherited session-token environment variables are removed. It never runs arbitrary caller commands, changes 1Password security settings, signs out, or performs a vault-global lock.
+
+The source follows the command flow: [CLI modules](src/cli/) validate arguments
+into [AppRequest](src/broker/app_request.rs), [broker dispatch](src/broker/dispatch.rs)
+performs the operation, and [AppResult](src/broker/app_result.rs) returns data to
+the CLI's output adapter.
+
+| Source | Ownership |
+| --- | --- |
+| [src/broker/](src/broker/) | Resident IPC, approvals, fixed leases, provider reads and persistent cleanup. |
+| [src/broker/phone/](src/broker/phone/) | Production phone relationships; `config/` owns runtime profiles, `tailnet/` peer admission, and `pairing/` comparison, enrollment and Java worker transport. |
+| [src/broker/mobile_dummy/](src/broker/mobile_dummy/) | Synthetic handoff adapters and manual fixtures; never registered by `serve`. |
+| [sdk/](sdk/), [src/sdk/](src/sdk/), [src/protocol/](src/protocol/) | Public SDK package, shared client/secret implementation and shared typed wire protocol. The SDK includes only its required Windows helpers. |
+| [src/platform/](src/platform/), [android/](android/), [pairing/java/](pairing/java/) | Windows OS adapters, Android lifecycle/UI/Keystore/TLS adapters, and the pinned Java UKEY2 engine with its desktop worker. |
+| [handoff/](handoff/) | Pairing bindings shared with resident enrollment, plus the synthetic queue and encrypted transport fixtures. See [mobile ownership](docs/mobile-handoff.md). |
 
 ## SDK
 
@@ -99,7 +113,7 @@ Purge and stop cannot revoke caller copies, reverse an API call, revoke upstream
 
 ## Diagnostics and verification
 
-Stdout contains redacted command results only. Diagnostics use stderr and optional explicit log files, with independent filters and text/NDJSON encoding inherited from the Teamy CLI template. Producer code never logs secrets, item metadata, raw arguments or arbitrary error/panic payloads. Protocol v2 distinguishes native user denial, approval timeout and upstream credential-read failure using a safe typed enum and static diagnostic messages. See [logging contract](docs/logging-progress.md), [protocol](docs/protocol.md), and [threat model](docs/threat-model.md).
+Stdout contains command results. Private profile values and active pairing comparisons appear only through their explicitly scoped commands. Diagnostics use stderr and optional explicit log files, with independent filters and text/NDJSON encoding inherited from the Teamy CLI template. Producer code never logs secrets, item metadata, raw arguments or arbitrary error/panic payloads. Protocol v2 distinguishes native user denial, approval timeout and upstream credential-read failure using a safe typed enum and static diagnostic messages. See [logging contract](docs/logging-progress.md), [protocol](docs/protocol.md), and [threat model](docs/threat-model.md).
 
 ```powershell
 cargo +nightly fmt --all -- --check
@@ -124,3 +138,5 @@ MPL-2.0. Started from the verified Teamy Rust CLI source snapshot based on `9946
 ## Phone approvals and pairing
 
 Explicit phone enrollment supports shared previews over authenticated Tailscale connections. Human UKEY2 comparison precedes certificate enrollment; scoped CLI inspection, confirmation and cancellation address one exact pairing attempt. Enrollment grants no credential access: each exact credential action needs a separate one-use authorization. Android uses Keystore and a user-started foreground service with Stop. See [phone approvals](docs/phone-approvals.md) for dependencies, pairing controls, revocation, fixture restrictions and recovery limits. Building does not arm pairing or create trust.
+
+`phone-configure --help` exposes runtime peer and Java settings. Configure while the daemon is stopped; an enrolled relationship must be explicitly revoked before changing its settings. `phone-config-show` reports redacted readiness, and `phone-config-validate` checks the local configuration without network or trust changes. Phone-capable distribution uses `package-broker.ps1` to place the verified Java runtime beside the executable, so a moved installation does not require the source checkout.

@@ -67,7 +67,10 @@ pub(crate) fn main_with_client(client: Option<sdk::Client>) -> eyre::Result<()> 
 }
 
 pub(crate) fn parse_cli() -> eyre::Result<Cli> {
-    entrypoint::finish_parse(parse_arguments(env::args_os().skip(1))?)
+    let cli = entrypoint::finish_parse(parse_arguments(env::args_os().skip(1))?)?;
+    cli.command
+        .validate_output_format(cli.global_args.output_format)?;
+    Ok(cli)
 }
 
 fn parse_arguments(
@@ -138,19 +141,20 @@ pub(crate) fn run_cli(cli: Cli, client: Option<sdk::Client>) -> eyre::Result<()>
 
         // Invoke whatever command was requested and render its output once at the top level
         let requested_output_format = cli.global_args.output_format;
+        let completion_policy = cli.command.completion_policy();
         let output = cli.invoke_with_client(cancellation_token.clone(), client)?;
         let threshold = output.elapsed_duration_warn_threshold;
-        cancellation_token.bail_if_cancelled()?;
         let stdout = io::stdout();
         let output_is_terminal = stdout.is_terminal();
-        let emitted = output.emit_to(
+        let emitted = output.emit_completed_to(
             &mut stdout.lock(),
             requested_output_format,
             output_is_terminal,
+            &cancellation_token,
+            completion_policy,
         );
         elapsed_duration::warn_if_exceeded(command_name, started.elapsed(), threshold);
         emitted?;
-        cancellation_token.bail_if_cancelled()?;
         Ok(())
     })();
     tracing::debug!(

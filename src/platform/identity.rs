@@ -2,7 +2,8 @@ use std::mem;
 use std::path::PathBuf;
 use std::ptr;
 use std::slice::from_raw_parts;
-use windows_sys::Win32::Foundation::CloseHandle;
+use windows::Win32::Foundation::HANDLE;
+use windows::core::Owned;
 use windows_sys::Win32::Foundation::LocalFree;
 use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
 use windows_sys::Win32::Security::GetTokenInformation;
@@ -24,17 +25,19 @@ pub fn sid() -> eyre::Result<String> {
         unsafe { OpenProcessToken(process, TOKEN_QUERY, &raw mut token) } != 0,
         "identity unavailable"
     );
-    let result = (|| {
+    // SAFETY: successful OpenProcessToken transfers exactly one owned kernel handle.
+    let token = unsafe { Owned::new(HANDLE(token)) };
+    (|| {
         let mut needed = 0;
         // SAFETY: size query uses null buffer with zero length.
-        unsafe { GetTokenInformation(token, TokenUser, ptr::null_mut(), 0, &raw mut needed) };
+        unsafe { GetTokenInformation((*token).0, TokenUser, ptr::null_mut(), 0, &raw mut needed) };
         let mut data = vec![0usize; (needed as usize).div_ceil(mem::size_of::<usize>())];
         // SAFETY: aligned buffer sized by the token information query.
         eyre::ensure!(
             // SAFETY: aligned buffer sized by the token information query.
             unsafe {
                 GetTokenInformation(
-                    token,
+                    (*token).0,
                     TokenUser,
                     data.as_mut_ptr().cast(),
                     needed,
@@ -68,10 +71,7 @@ pub fn sid() -> eyre::Result<String> {
         // SAFETY: this allocation was returned by ConvertSidToStringSidW.
         unsafe { LocalFree(text.cast()) };
         Ok(value?)
-    })();
-    // SAFETY: owned token handle is closed exactly once.
-    unsafe { CloseHandle(token) };
-    result
+    })()
 }
 /// # Errors
 ///

@@ -44,7 +44,7 @@ pub struct GlobalArgs {
     #[arbitrary(default)]
     pub stop_after: StopAfterArgs,
 
-    /// Render command output as `text`, `json`, or `csv`.
+    /// Render command output as `text` or `json`; `csv` is available for flat results.
     ///
     /// If omitted, the generated CLI uses `text` for interactive terminals and
     /// `json` when stdout is redirected.

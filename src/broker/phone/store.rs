@@ -89,7 +89,7 @@ impl Store {
         result
     }
 }
-fn replace(source: &Path, target: &Path) -> eyre::Result<()> {
+pub(super) fn replace(source: &Path, target: &Path) -> eyre::Result<()> {
     let source: Vec<_> = source.as_os_str().encode_wide().chain(Some(0)).collect();
     let target: Vec<_> = target.as_os_str().encode_wide().chain(Some(0)).collect();
     // SAFETY: both NUL terminated paths remain alive throughout the synchronous atomic replacement.

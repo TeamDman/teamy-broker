@@ -1,3 +1,5 @@
+use super::completion_policy::CompletionPolicy;
+use crate::broker::app_result::AppResult;
 use arbitrary::Arbitrary;
 use core::fmt::Debug;
 use core::fmt::Formatter;
@@ -8,6 +10,7 @@ use facet_pretty::ColorMode;
 use facet_pretty::PrettyPrinter;
 use std::io::Write;
 use std::time::Duration;
+use teamy_cancellation::CancellationToken;
 
 #[derive(Arbitrary, Facet, Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[facet(rename_all = "kebab-case")]
@@ -50,6 +53,32 @@ struct FacetCliOutput<T> {
 }
 
 impl CliOutput {
+    pub(crate) fn from_app_result(result: AppResult, threshold: Option<Duration>) -> Self {
+        match result {
+            AppResult::Completed => Self::none(threshold),
+            AppResult::Status(value) => Self::facet(value, threshold),
+            AppResult::PhoneStatus(value) => Self::facet(value, threshold),
+            AppResult::PhoneConfig(value) => Self::facet(value, threshold),
+            AppResult::PairingInspection(value) => Self::facet(value, threshold),
+            AppResult::PairingConfirmation(value) => Self::facet(value, threshold),
+            AppResult::ApprovalPreview(value) => Self::facet(value, threshold),
+            AppResult::PreviewProposal => Self::facet("PROPOSAL ONLY: preview --show-test-dialog opens one TEST/DUMMY window through the already-running resident broker. No vault, credential or lease; no autostart. Coordinate timing first.".to_owned(), threshold),
+        }
+    }
+
+    pub(crate) fn emit_completed_to<W: Write + ?Sized>(
+        self,
+        writer: &mut W,
+        requested_format: Option<OutputFormat>,
+        output_is_terminal: bool,
+        cancellation: &CancellationToken,
+        completion_policy: CompletionPolicy,
+    ) -> eyre::Result<()> {
+        completion_policy.check(cancellation)?;
+        self.emit_to(writer, requested_format, output_is_terminal)?;
+        completion_policy.check(cancellation)
+    }
+
     #[must_use]
     pub const fn none(elapsed_duration_warn_threshold: Option<Duration>) -> Self {
         Self {

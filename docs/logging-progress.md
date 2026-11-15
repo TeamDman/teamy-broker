@@ -16,24 +16,15 @@ Files append, create missing parent directories, and require a filename rather t
 
 The binary boundary emits safe failure records without raw errors, arguments, paths, or panic payloads. In NDJSON mode these are JSON lines even if startup fails or diagnostics are disabled. Explicit help/version/completions retain Figue's ordinary presentation. Their display is outside the diagnostic stream contract. Library callers of `main()` own error and panic presentation themselves.
 
-This is a producer discipline, not automatic general redaction. Never log credentials, mail bodies, tokens, raw CLI arguments or arbitrary panic/error payloads. Choose explicit safe fields and use `skip_all` on instrumentation of sensitive inputs. The subprocess regression uses a synthetic secret marker and verifies that a startup failure cannot disclose it.
+Producer code must choose safe fields. Never log credentials, item metadata, raw CLI arguments or arbitrary panic/error payloads. Use `skip_all` when instrumenting sensitive inputs. Subprocess regressions verify that synthetic private markers cannot appear in startup failures.
 
 Emit direct tracing events at meaningful call sites. Choose DEBUG for routine dispatch and completion, INFO for useful operation updates, and WARN/ERROR for reviewed failures. Add operation-specific structured fields, such as completed_items, bytes_written, elapsed_ms, or phase, when useful. There is no mandatory progress schema, universal task/run/state vocabulary, or custom caller-location wrapper. Text and NDJSON retain tracing's actual event file/line. Existing command spans still provide timing receipts, and existing expected-duration checks remain warning-only. Logs do not replace command results or typed service status.
-
-There is no GUI or OpenTelemetry dependency. A downstream application can interpret the fields directly.
 
 Broker IPC does not transmit diagnostic streams or request log filters. Daemon diagnostics remain in its explicitly configured local sinks; status exposes redacted counters. The safe-message callback classifies errors into reviewed static text without exposing raw chains.
 
 
-Command runtime expectations describe a command contract (for example, expected
-completion under one second where that contract already exists). They are not
-work progress or an ETA. Actual work may emit item/byte counts, remaining work,
-rates, or evidence-based item/byte ETAs as operation-specific fields. Consumers
-may derive rates and ETAs from suitable measurements. Do not substitute command
-completed=0/1, mandatory percentages, or invented estimates for those measurements.
+## Completion budgets
 
-```rust
-tracing::debug!(items_processed = processed, bytes_written = written, "Batch written");
-```
+The CLI output adapter assigns an explicit optional completion budget. Status, purge, stop, cleanup and local phone configuration use ten seconds. Foreground serving and interactive phone/approval operations are exempt. These are warning thresholds, separate from transport and approval deadlines.
 
-Use safe fields at the actual operation call site; no helper envelope is required.
+The top level measures invocation and output together, then warns only when elapsed time exceeds the returned budget. Diagnostics contain `elapsed_duration_ms` and `elapsed_duration_warn_threshold_ms`; budgets never enter result JSON, CSV or text. Rendering failures still receive the budget check, while retaining the original rendering error. A completion warning cannot detect a hung command or predict remaining work.

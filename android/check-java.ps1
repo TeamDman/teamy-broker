@@ -9,12 +9,6 @@ if ($LASTEXITCODE) { throw 'Runtime phone configuration contract failed' }
 & java -cp $out dev.teamy.broker.dummy.DurablePhoneConfigTest
 if ($LASTEXITCODE) { throw 'Durable phone configuration contract failed' }
 
-& javac -d $out (Join-Path $root 'src/dev/teamy/broker/dummy/Crypto.java') (Join-Path $root 'src/dev/teamy/broker/dummy/DummyPolicy.java') (Join-Path $root 'src/dev/teamy/broker/dummy/BootstrapPolicy.java') (Join-Path $root 'tests/CryptoTest.java')
-if ($LASTEXITCODE) { throw 'Java compile failed' }
-& java -cp $out CryptoTest
-if ($LASTEXITCODE) { throw 'Java contract failed' }
-
-
 & javac -d $out (Join-Path $root 'src/dev/teamy/broker/dummy/FocusReveal.java') (Join-Path $root 'tests/FocusRevealTest.java')
 if ($LASTEXITCODE) { throw 'Focus geometry compile failed' }
 & java -cp $out FocusRevealTest

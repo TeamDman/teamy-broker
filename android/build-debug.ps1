@@ -41,9 +41,15 @@ $tools = Get-ChildItem -LiteralPath (Join-Path $sdk 'build-tools') -Directory |
     Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'lib/d8.jar') } | Sort-Object { [version]($_.Name -replace '-.*','') } -Descending | Select-Object -First 1
 if (!$platform -or !$tools) { throw 'Approved SDK platform 35/36 and build-tools with D8 are required.' }
 $androidJar = Join-Path $platform.FullName 'android.jar'
-$out = $OutputDirectory
-$classes = Join-Path $out 'classes'
-$dex = Join-Path $out 'dex'
+[xml]$manifest = [IO.File]::ReadAllText((Resolve-Path -LiteralPath $ManifestPath).Path)
+$minimumSdk = $manifest.manifest.'uses-sdk'.GetAttribute('minSdkVersion','http://schemas.android.com/apk/res/android')
+$minimumApi = 0
+if (![int]::TryParse($minimumSdk,[ref]$minimumApi) -or $minimumApi -lt 1) { throw 'Manifest must declare a numeric minimum SDK.' }
+$out = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputDirectory)
+$work = Join-Path $out ('run-'+[Guid]::NewGuid().ToString('N'))
+$classes = Join-Path $work 'classes'
+$dex = Join-Path $work 'dex'
+try {
 New-Item -ItemType Directory -Path $classes,$dex -Force | Out-Null
 function Run-Tool([string]$Executable, [string[]]$Arguments) {
     & $Executable @Arguments
@@ -57,20 +63,20 @@ $runtime = @($runtimeNames | ForEach-Object {Join-Path $pairingRoot ('deps/'+$_)
 $classpath = (@($androidJar,$pairingJar)+$runtime) -join ';'
 $sources = @(Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot 'src') -Recurse -Filter '*.java' | Select-Object -ExpandProperty FullName)
 Run-Tool (Join-Path $JavaBin 'javac.exe') (@('-encoding','UTF-8','-source','8','-target','8','-classpath',$classpath,'-d',$classes) + $sources)
-$classJar = Join-Path $out 'classes.jar'
+$classJar = Join-Path $work 'classes.jar'
 Run-Tool (Join-Path $JavaBin 'jar.exe') @('--create','--file',$classJar,'-C',$classes,'.')
-Run-Tool (Join-Path $JavaBin 'java.exe') (@('-Xmx384m','-cp',(Join-Path $tools.FullName 'lib/d8.jar'),'com.android.tools.r8.D8','--min-api','26','--lib',$androidJar,'--output',$dex,$classJar,$pairingJar) + $runtime)
-$unsigned = Join-Path $out 'unsigned.apk'
-Run-Tool (Join-Path $tools.FullName 'aapt2.exe') @('link','-I',$androidJar,'--manifest',$ManifestPath,'--min-sdk-version','26','--target-sdk-version','35','-o',$unsigned)
+Run-Tool (Join-Path $JavaBin 'java.exe') (@('-Xmx384m','-cp',(Join-Path $tools.FullName 'lib/d8.jar'),'com.android.tools.r8.D8','--min-api',$minimumSdk,'--lib',$androidJar,'--output',$dex,$classJar,$pairingJar) + $runtime)
+$unsigned = Join-Path $work 'unsigned.apk'
+Run-Tool (Join-Path $tools.FullName 'aapt2.exe') @('link','-I',$androidJar,'--manifest',$ManifestPath,'--min-sdk-version',$minimumSdk,'--target-sdk-version','35','-o',$unsigned)
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $zip = [System.IO.Compression.ZipFile]::Open($unsigned, [System.IO.Compression.ZipArchiveMode]::Update)
 try { [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, (Join-Path $dex 'classes.dex'), 'classes.dex') | Out-Null
     foreach($license in @('LICENSE','NOTICE')) {
         [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, (Join-Path $pairingRoot ('vendor/google-ukey2/'+$license)), ('assets/licenses/google-ukey2-'+$license)) | Out-Null
     } } finally { $zip.Dispose() }
-$aligned = Join-Path $out 'aligned.apk'
+$aligned = Join-Path $work 'aligned.apk'
 Run-Tool (Join-Path $tools.FullName 'zipalign.exe') @('-f','4',$unsigned,$aligned)
-$apk = Join-Path $out 'teamy-broker-DUMMY-ONLY-debug.apk'
+$apk = Join-Path $work 'teamy-broker-DUMMY-ONLY-debug.apk'
 # Public Makepad debug identity only. Never reuse this for real-token deployment.
 $storePassword = 'pass:android'
 $keyPassword = 'pass:android'
@@ -88,5 +94,15 @@ if ($ExpectedSignerSha256) {
 }
 Run-Tool (Join-Path $JavaBin 'java.exe') @('-jar',(Join-Path $tools.FullName 'lib/apksigner.jar'),'verify','--verbose',$apk)
 Run-Tool (Join-Path $tools.FullName 'aapt2.exe') @('dump','permissions',$apk)
+$published = Join-Path $out 'teamy-broker-DUMMY-ONLY-debug.apk'
+Move-Item -LiteralPath $apk -Destination $published -Force
+$apk = $published
 Get-FileHash -LiteralPath $apk -Algorithm SHA256
 Write-Output "Dummy-only debug APK: $apk"
+} finally {
+    # Delete only this invocation's generated workspace, never prior output or caller files.
+    $outPath=[IO.Path]::GetFullPath($out).TrimEnd([IO.Path]::DirectorySeparatorChar)+[IO.Path]::DirectorySeparatorChar
+    $workPath=[IO.Path]::GetFullPath($work)
+    if(!$workPath.StartsWith($outPath,[StringComparison]::OrdinalIgnoreCase)){throw 'Build workspace escaped output directory.'}
+    if(Test-Path -LiteralPath $workPath){Remove-Item -LiteralPath $workPath -Recurse -Force}
+}

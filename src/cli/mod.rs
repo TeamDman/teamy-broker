@@ -3,10 +3,15 @@ use crate::sdk::Client;
 use tokio::runtime::Builder;
 pub mod cleanup;
 pub mod command;
+pub mod completion_policy;
 pub mod global_args;
 pub mod log_format;
 pub mod output;
+pub(crate) mod output_policy;
 pub mod phone_authorize;
+pub mod phone_config_show;
+pub mod phone_config_validate;
+pub mod phone_configure;
 pub mod phone_list;
 pub mod phone_pair;
 pub mod phone_pair_cancel;
@@ -56,17 +61,22 @@ impl Cli {
         cancellation: CancellationToken,
         client: Option<Client>,
     ) -> eyre::Result<CliOutput> {
+        self.command
+            .validate_output_format(self.global_args.output_format)?;
         tracing::info!(phase = "request", "Command startup");
         cancellation.bail_if_cancelled()?;
         let comparison = match &self.command {
             Command::PhonePairConfirm(args) => Some(args.read_comparison(&cancellation)?),
             _ => None,
         };
+        let threshold = self.command.elapsed_duration_warn_threshold();
         let request = self.command.into_request_with_comparison(comparison)?;
         cancellation.bail_if_cancelled()?;
         tracing::info!(phase = "runtime-create", "Command startup");
         let runtime = Builder::new_multi_thread().enable_all().build()?;
         tracing::info!(phase = "runtime-ready", "Command startup");
-        runtime.block_on(dispatch::invoke_with_client(request, cancellation, client))
+        let result =
+            runtime.block_on(dispatch::invoke_with_client(request, cancellation, client))?;
+        Ok(CliOutput::from_app_result(result, threshold))
     }
 }

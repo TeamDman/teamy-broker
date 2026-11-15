@@ -11,6 +11,7 @@ use teamy_broker::broker::mobile_dummy::adapter::MobileDummyAdapter;
 use teamy_broker::broker::mobile_dummy::approval::MobileDummyApproval;
 use teamy_broker::broker::mobile_dummy::storage::DummyMemoryStorage;
 use teamy_broker::broker::mobile_dummy::{self};
+use teamy_broker::broker::phone::pairing::packet::Packet;
 use teamy_broker::broker::server;
 use teamy_broker::protocol::VERSION;
 use teamy_broker::protocol::wire as protocol_wire;
@@ -242,7 +243,7 @@ async fn tcp_poll_and_submit_preserve_encrypted_protocol_framing() {
     });
     let binding = pending(&queue, &phone).await;
     let challenge = wire::random::<32>().unwrap();
-    let packet = mobile_dummy::packet::Packet {
+    let packet = Packet {
         operation: "poll".into(),
         envelope: phone
             .seal(teamy_broker_handoff::POLL_AAD, &challenge)
@@ -259,7 +260,7 @@ async fn tcp_poll_and_submit_preserve_encrypted_protocol_framing() {
     let mut outer = exact.into_bytes();
     outer.push(0);
     outer.extend(facet_json::to_string(&inner).unwrap().as_bytes());
-    let packet = mobile_dummy::packet::Packet {
+    let packet = Packet {
         operation: "submit".into(),
         envelope: phone
             .seal(teamy_broker_handoff::SUBMIT_AAD, &outer)

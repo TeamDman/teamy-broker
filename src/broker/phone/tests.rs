@@ -1,24 +1,36 @@
+use super::preview_hub::PreviewHub;
+use super::runtime_guard::RuntimeGuard;
+use super::store::Record;
+use super::store::Store;
 use super::*;
 use crate::broker::approval::Approval;
 use crate::broker::approval_decision::ApprovalDecision;
 use crate::broker::credential_grant::CredentialGrant;
+use crate::broker::engine::Engine;
 use crate::broker::lease::Lease;
 use crate::broker::publication_gate::PublicationGate;
 use crate::broker::server;
+use crate::broker::shared_preview::SharedPreviewHub;
 use crate::broker::synthetic_credential_fixture;
 use crate::broker::synthetic_credential_fixture::INPUT;
 use crate::broker::synthetic_credential_fixture::PROVIDER;
 use crate::broker::work_guard::WorkGuard;
 use crate::platform::pipe_security;
+use crate::protocol::AcquireRequest;
+use crate::protocol::ApprovalPreviewDisposition;
 use crate::protocol::Backend;
 use crate::protocol::CAPABILITIES;
 use crate::protocol::Hello;
 use crate::protocol::Request;
 use crate::protocol::VERSION;
 use crate::protocol::pairing_comparison::PairingCode;
+use crate::protocol::phone_status::PhoneConnectionState;
+use crate::protocol::phone_status::PhoneDiagnostic;
 use crate::protocol::phone_status::PhoneFailureCategory;
 use crate::protocol::phone_status::PhonePhase;
+use crate::protocol::phone_status::PhoneRuntimeState;
 use crate::protocol::phone_status::PhoneTransportKind;
+use crate::protocol::wire;
 use crate::sdk::Client;
 use ::time::Duration as CalendarDuration;
 use ::time::OffsetDateTime;
@@ -34,8 +46,15 @@ use std::future;
 use std::io::Error as IoError;
 use std::io::ErrorKind;
 use std::iter;
+use std::net::Ipv4Addr;
 use std::path::PathBuf;
 use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU8;
+use std::sync::atomic::Ordering;
+use std::time::Instant;
 use tokio::io;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
@@ -46,6 +65,7 @@ use tokio::net::windows::named_pipe::NamedPipeServer;
 use tokio::sync::oneshot;
 use tokio::task;
 use tokio::task::JoinHandle;
+use tokio::time;
 use tokio_rustls::client::TlsStream;
 pub(super) struct Fixture(PathBuf, Arc<SharedPreviewHub>);
 impl Fixture {
@@ -89,6 +109,27 @@ fn phone() -> (Vec<u8>, Vec<u8>) {
     params.key_usages = vec![rcgen::KeyUsagePurpose::DigitalSignature];
     let cert = params.self_signed(&key).unwrap();
     (cert.der().to_vec(), key.serialize_der())
+}
+
+#[test]
+fn fresh_enrollment_replaces_the_revoked_identity() {
+    let fixture = Fixture::new();
+    let controller = fixture.controller();
+    controller.arm().unwrap();
+    let first = controller.record().unwrap().unwrap();
+    controller.revoke().unwrap();
+    controller.arm().unwrap();
+    let second = controller.record().unwrap().unwrap();
+    assert_ne!(first.generation, second.generation);
+    assert_ne!(first.certificate, second.certificate);
+    assert_ne!(first.private_key, second.private_key);
+    let (certificate, _) = phone();
+    drop(
+        controller
+            .enroll(&first.generation, &certificate)
+            .unwrap_err(),
+    );
+    controller.enroll(&second.generation, &certificate).unwrap();
 }
 #[test]
 fn protected_relationship_survives_restart_and_revoke() {
@@ -457,7 +498,7 @@ fn runtime_guard_retains_failure_and_releases_actor_ownership() {
     let fixture = Fixture::new();
     let controller = fixture.controller();
     controller.actor_active.store(true, Ordering::Release);
-    let guard = RuntimeGuard(Arc::clone(&controller));
+    let guard = RuntimeGuard::new(Arc::clone(&controller));
     controller.runtime.store(3, Ordering::Release);
     controller.listener.store(true, Ordering::Release);
     controller.connected.store(true, Ordering::Release);

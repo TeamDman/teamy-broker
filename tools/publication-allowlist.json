@@ -1,0 +1,56 @@
+[
+  {
+    "file": "tests/mobile_tls_contract.rs",
+    "rule": "Tailnet address or hostname",
+    "matches": ["100.64.0.1", "100.64.0.2"],
+    "reason": "Synthetic peer-policy inputs; no network connection uses these addresses."
+  },
+  {
+    "file": "tests/cli_contract.rs",
+    "rule": "Tailnet address or hostname",
+    "matches": ["100.64.0.1", "100.64.0.2"],
+    "reason": "Synthetic configuration CLI inputs and duplicate-peer rejection."
+  },
+  {
+    "file": "src/broker/phone/config/phone_profile.rs",
+    "rule": "Tailnet address or hostname",
+    "matches": ["100.64.0.1", "100.64.0.2", "100.64.0.3"],
+    "reason": "Synthetic profile migration, relationship-change and persistence fixtures."
+  },
+  {
+    "file": "src/broker/phone/config/tailscale_tailnet_ipv4_addr.rs",
+    "rule": "Tailnet address or hostname",
+    "matches": ["100.64.0.0", "100.127.255.255"],
+    "reason": "Documented CGNAT range and address-validation boundary fixtures."
+  },
+  {
+    "file": "android/tests/PrivatePhoneConfigTest.java",
+    "rule": "Tailnet address or hostname",
+    "matches": ["100.64.256.1", "100.64.0.1"],
+    "reason": "Invalid-octet and trailing-newline rejection fixtures."
+  },
+  {
+    "file": "android/tests/DurablePhoneConfigTest.java",
+    "rule": "Tailnet address or hostname",
+    "matches": ["100.64.0.1", "100.64.0.2", "100.64.0.3", "100.64.0.4"],
+    "reason": "Two synthetic peer profiles for persistence and failure-recovery tests."
+  },
+  {
+    "file": "src/cli/phone_configure/teamy_broker_phone_configure_cli.rs",
+    "rule": "Tailnet address or hostname",
+    "matches": ["100.64.0.0"],
+    "reason": "CLI help documents the accepted CGNAT network range."
+  },
+  {
+    "file": "src/broker/phone/config/phone_config_request_tests.rs",
+    "rule": "Tailnet address or hostname",
+    "matches": ["100.64.0.3"],
+    "reason": "Synthetic replacement profile for mutation and redaction contracts."
+  },
+  {
+    "file": "tools/publication-allowlist.json",
+    "rule": "Tailnet address or hostname",
+    "matches": ["100.64.0.0", "100.127.255.255", "100.64.256.1", "100.64.0.1", "100.64.0.2", "100.64.0.3", "100.64.0.4"],
+    "reason": "The reviewed exception definitions contain their exact synthetic matches; other rules still apply."
+  }
+]

@@ -4,7 +4,8 @@ use std::fmt::Result as FmtResult;
 use std::time::Instant;
 use zeroize::Zeroizing;
 pub struct Grant {
-    pub(crate) work: super::work_guard::WorkGuard,
+    /// Keeps the request visible until grant handoff or abandonment finishes.
+    pub(crate) _work: super::work_guard::WorkGuard,
     pub id: String,
     pub expires: u64,
     pub deadline: Instant,

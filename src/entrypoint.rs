@@ -1,5 +1,6 @@
 use crate::cli::Cli;
 use crate::cli::log_format::LogFormat;
+use crate::cli::output_policy::UNSUPPORTED_CSV;
 use crate::failure_record::FailureRecord;
 use crate::sdk::Client;
 use std::env;
@@ -45,7 +46,11 @@ fn run(client: Option<Client>, classify: fn(&eyre::Report) -> &'static str) -> E
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            let message = classify(&error);
+            let message = if error.to_string() == UNSUPPORTED_CSV {
+                UNSUPPORTED_CSV
+            } else {
+                classify(&error)
+            };
             tracing::error!(target: "teamy::failure_file", event_kind = "failure", "{message}");
             let _ = report_failure(format, message);
             ExitCode::FAILURE

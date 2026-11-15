@@ -24,7 +24,7 @@ public final class PhoneService extends Service {
         if(pairingOwner==null)return;
         NotificationManager manager=getSystemService(NotificationManager.class);
         android.app.NotificationChannel channel=manager.getNotificationChannel("approval-connection");
-        if(stopped||!pairingOwner.client.live(false)||!manager.areNotificationsEnabled()||channel==null||channel.getImportance()==NotificationManager.IMPORTANCE_NONE){requestStop();return;}
+        if(stopped||!pairingOwner.client.live()||!manager.areNotificationsEnabled()||channel==null||channel.getImportance()==NotificationManager.IMPORTANCE_NONE){requestStop();return;}
         pairingUi.postDelayed(this,250);
     }};
     private ExecutorService actor;

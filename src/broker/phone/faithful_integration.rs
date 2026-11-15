@@ -1,5 +1,5 @@
 //! Private-desktop and loopback-only test fixture; never compiled into production.
-use super::*;
+use crate::broker::engine::Engine;
 use crate::broker::mobile_dummy::adapter::MobileDummyAdapter;
 use crate::broker::mobile_dummy::storage::DummyMemoryStorage;
 use crate::broker::native_approval::NativeApproval;
@@ -11,15 +11,21 @@ use crate::protocol::Hello;
 use crate::protocol::Request;
 use crate::protocol::VERSION;
 use crate::protocol::pairing_comparison::PairingCode;
+use crate::protocol::wire;
 use crate::sdk::Client;
 use std::env;
 use std::io;
 use std::io::Write;
 use std::iter;
 use std::str;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::time::Duration;
+use std::time::Instant;
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
+use tokio::time;
 use windows_sys::Win32::System::StationsAndDesktops::CloseDesktop;
 use windows_sys::Win32::System::StationsAndDesktops::DESKTOP_READOBJECTS;
 use windows_sys::Win32::System::StationsAndDesktops::GetThreadDesktop;

@@ -8,9 +8,19 @@ use std::time::Duration;
 use std::time::Instant;
 
 const TASK_NOT_FOUND_HELPER: &str = r"
+# Only classify exceptions caught from an exact GetTask or DeleteTask COM call.
+# PowerShell can map HRESULT 0x80070002 to FileNotFoundException inside its
+# MethodInvocationException instead of retaining the original COMException.
 function Test-BrokerTaskNotFound([System.Exception] $Exception) {
+    $methodInvocation = $false
     while ($null -ne $Exception) {
         if ($Exception -is [System.Runtime.InteropServices.COMException]) {
+            return $Exception.HResult -eq -2147024894
+        }
+        if ($Exception -is [System.Management.Automation.MethodInvocationException]) {
+            $methodInvocation = $true
+        }
+        if ($methodInvocation -and $Exception -is [System.IO.FileNotFoundException]) {
             return $Exception.HResult -eq -2147024894
         }
         $Exception = $Exception.InnerException
@@ -33,7 +43,7 @@ fn run(script: &str) -> eyre::Result<String> {
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         if let Some(status) = child.try_wait()? {
-            eyre::ensure!(status.success(), "cleanup registration operation failed");
+            eyre::ensure!(status.success(), "cleanup scheduler operation failed");
             let mut output = String::new();
             if let Some(stdout) = child.stdout.take() {
                 stdout.take(1024).read_to_string(&mut output)?;
@@ -109,17 +119,27 @@ $ErrorActionPreference = 'Stop'
 $missing = [System.Runtime.InteropServices.COMException]::new('missing task', -2147024894)
 $wrapped = [System.Management.Automation.MethodInvocationException]::new('wrapped', $missing)
 $nested = [System.Reflection.TargetInvocationException]::new('nested', $wrapped)
-foreach ($exception in @($missing, $wrapped, $nested)) {
+$mapped = [System.Runtime.InteropServices.Marshal]::GetExceptionForHR(-2147024894)
+if ($mapped -isnot [System.IO.FileNotFoundException]) { throw 'unexpected HRESULT mapping' }
+$mappedWrapped = [System.Management.Automation.MethodInvocationException]::new('mapped', $mapped)
+$mappedNested = [System.Reflection.TargetInvocationException]::new('nested', $mappedWrapped)
+foreach ($exception in @($missing, $wrapped, $nested, $mappedWrapped, $mappedNested)) {
     if (!(Test-BrokerTaskNotFound $exception)) { throw 'missing task was not classified' }
     try { throw $exception } catch {
         if (!(Test-BrokerTaskNotFound $_.Exception)) { throw }
     }
 }
+# Exercise PowerShell's own method wrapper without accessing Task Scheduler.
+try { [System.Runtime.InteropServices.Marshal]::ThrowExceptionForHR(-2147024894) } catch {
+    if (!(Test-BrokerTaskNotFound $_.Exception)) { throw }
+}
 $denied = [System.Runtime.InteropServices.COMException]::new('denied', -2147024891)
 $pathMissing = [System.Runtime.InteropServices.COMException]::new('missing path', -2147024893)
 $fileMissing = [System.IO.FileNotFoundException]::new('unrelated missing file')
 $other = [System.InvalidOperationException]::new('unrelated operation')
-foreach ($exception in @($denied, $pathMissing, $fileMissing, $other)) {
+$mappedDenied = [System.Runtime.InteropServices.Marshal]::GetExceptionForHR(-2147024891)
+$mappedPathMissing = [System.Runtime.InteropServices.Marshal]::GetExceptionForHR(-2147024893)
+foreach ($exception in @($denied, $pathMissing, $other, $mappedDenied, $mappedPathMissing)) {
     foreach ($candidate in @($exception, [System.Management.Automation.MethodInvocationException]::new('wrapped', $exception))) {
         if (Test-BrokerTaskNotFound $candidate) { throw 'unrelated failure was classified as missing task' }
         $propagated = $false
@@ -130,6 +150,9 @@ foreach ($exception in @($denied, $pathMissing, $fileMissing, $other)) {
         } catch { $propagated = $true }
         if (!$propagated) { throw 'unrelated failure was suppressed' }
     }
+}
+foreach ($exception in @($fileMissing, [System.Reflection.TargetInvocationException]::new('unrelated', $fileMissing))) {
+    if (Test-BrokerTaskNotFound $exception) { throw 'missing file without method wrapper was classified as a task' }
 }
 'classification-ok'
 ";

@@ -17,6 +17,7 @@ use std::io::Write;
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 use std::path::PathBuf;
+use uuid::Uuid;
 use windows_sys::Win32::Storage::FileSystem::MOVEFILE_WRITE_THROUGH;
 use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
 use zeroize::Zeroizing;
@@ -120,13 +121,27 @@ fn cleanup_locked(
     descriptor: &Descriptor,
     read_cache: impl FnOnce(&Backend) -> eyre::Result<Option<Zeroizing<Vec<u8>>>>,
     delete_cache: impl FnOnce(&Backend) -> eyre::Result<()>,
+    remove_staging: impl FnOnce(&Backend, Uuid) -> eyre::Result<()>,
     remove_task: impl FnOnce(&str) -> eyre::Result<()>,
 ) -> eyre::Result<()> {
+    let id = Uuid::parse_str(&descriptor.id)?;
+    remove_staging(&descriptor.backend, id)?;
     if let Some(bytes) = read_cache(&descriptor.backend)?
-        && generation(&bytes)? == uuid::Uuid::parse_str(&descriptor.id)?
+        && generation(&bytes)? == id
     {
         delete_cache(&descriptor.backend)?;
     }
+    remove_task(&descriptor.id)?;
+    remove_descriptor(file)
+}
+
+fn rollback_unpublished(
+    file: &Path,
+    descriptor: &Descriptor,
+    remove_staging: impl FnOnce(&Backend, Uuid) -> eyre::Result<()>,
+    remove_task: impl FnOnce(&str) -> eyre::Result<()>,
+) -> eyre::Result<()> {
+    remove_staging(&descriptor.backend, Uuid::parse_str(&descriptor.id)?)?;
     remove_task(&descriptor.id)?;
     remove_descriptor(file)
 }
@@ -138,6 +153,8 @@ pub fn publish(lease: &Lease) -> eyre::Result<()> {
         return Ok(());
     }
     let _lock = lock(&lease.request.backend)?;
+    let id = Uuid::parse_str(&lease.id)?;
+    native_storage::require_staging_available(&lease.request.backend, id)?;
     if let Some(bytes) = cache_reader::read(&lease.request.backend)? {
         generation(&bytes)?;
     }
@@ -150,20 +167,26 @@ pub fn publish(lease: &Lease) -> eyre::Result<()> {
     // Durable metadata must precede registration. Secret publication must follow verified registration.
     write_descriptor(&file, &descriptor)?;
     if let Err(e) = scheduler::register(&lease.id, lease.expires) {
-        if scheduler::remove(&lease.id).is_ok() {
-            let _ = remove_descriptor(&file);
-        }
+        let _ = rollback_unpublished(
+            &file,
+            &descriptor,
+            native_storage::remove_staging,
+            scheduler::remove,
+        );
         return Err(e);
     }
     let mut bytes = Zeroizing::new(Vec::new());
     bytes.extend_from_slice(b"TEAMYB01");
-    bytes.extend_from_slice(uuid::Uuid::parse_str(&lease.id)?.as_bytes());
+    bytes.extend_from_slice(id.as_bytes());
     bytes.extend_from_slice(&lease.expires.to_be_bytes());
     bytes.extend_from_slice(&lease.secret);
-    if let Err(e) = native_storage::write(&lease.request.backend, &bytes) {
-        if scheduler::remove(&lease.id).is_ok() {
-            let _ = remove_descriptor(&file);
-        }
+    if let Err(e) = native_storage::write(&lease.request.backend, &bytes, id) {
+        let _ = rollback_unpublished(
+            &file,
+            &descriptor,
+            native_storage::remove_staging,
+            scheduler::remove,
+        );
         return Err(e);
     }
     Ok(())
@@ -192,6 +215,7 @@ pub fn cleanup(id: &str, force: bool) -> eyre::Result<()> {
         &descriptor,
         cache_reader::read,
         native_storage::delete,
+        native_storage::remove_staging,
         scheduler::remove,
     )
 }
@@ -222,7 +246,6 @@ mod tests {
     use super::*;
     use std::cell::Cell;
     use std::env;
-    use uuid::Uuid;
 
     struct TemporaryDescriptor(PathBuf);
 
@@ -312,6 +335,7 @@ mod tests {
                 removals.set(removals.get() + 1);
                 Ok(())
             },
+            |_, _| Ok(()),
             |_| Ok(()),
         )
         .unwrap();
@@ -325,6 +349,7 @@ mod tests {
             &first,
             |_| Ok(Some(envelope(&replacement.id))),
             |_| panic!("older cleanup removed a replacement generation"),
+            |_, _| Ok(()),
             |_| Ok(()),
         )
         .unwrap();
@@ -341,6 +366,7 @@ mod tests {
             &record,
             |_| Ok(None),
             |_| panic!("absent cache must not be deleted"),
+            |_, _| Ok(()),
             |_| eyre::bail!("injected scheduler removal failure"),
         );
         let _ = result.unwrap_err();
@@ -358,9 +384,77 @@ mod tests {
             &record,
             |_| Ok(Some(envelope(&record.id))),
             |_| eyre::bail!("injected cache removal failure"),
+            |_, _| Ok(()),
             |_| panic!("cleanup task was removed before its cache"),
         );
         let _ = result.unwrap_err();
         assert!(file.is_file(), "retry metadata was lost");
+    }
+
+    #[test]
+    fn failed_staging_removal_preserves_task_and_descriptor_for_retry() {
+        let temporary = TemporaryDescriptor::new();
+        let file = temporary.file();
+        let record = descriptor();
+        write_descriptor(&file, &record).unwrap();
+        let result = cleanup_locked(
+            &file,
+            &record,
+            |_| panic!("failed staging cleanup must retain all later recovery work"),
+            |_| panic!("cache must not be removed after staging failure"),
+            |_, _| eyre::bail!("injected staging removal failure"),
+            |_| panic!("cleanup task was removed while staging remains"),
+        );
+        let _ = result.unwrap_err();
+        assert!(file.is_file());
+    }
+
+    #[test]
+    fn unpublished_rollback_keeps_recovery_metadata_until_staging_removal_succeeds() {
+        let temporary = TemporaryDescriptor::new();
+        let file = temporary.file();
+        let record = descriptor();
+        write_descriptor(&file, &record).unwrap();
+        let result = rollback_unpublished(
+            &file,
+            &record,
+            |_, _| eyre::bail!("injected staging removal failure"),
+            |_| panic!("registration must remain retryable while staging remains"),
+        );
+        let _ = result.unwrap_err();
+        assert!(file.is_file());
+        rollback_unpublished(&file, &record, |_, _| Ok(()), |_| Ok(())).unwrap();
+        assert!(!file.exists());
+    }
+
+    #[test]
+    fn old_descriptor_cleans_its_partial_stage_and_preserves_a_replacement_cache() {
+        let temporary = TemporaryDescriptor::new();
+        let file = temporary.file();
+        let destination = temporary.0.join("cache");
+        let record = Descriptor {
+            backend: Backend::WellKnownFile(destination.to_str().unwrap().to_owned()),
+            ..descriptor()
+        };
+        let replacement = envelope(&Uuid::new_v4().to_string());
+        fs::write(&destination, &replacement).unwrap();
+        let stage = temporary
+            .0
+            .join(format!(".teamy-broker-stage-{}.tmp", record.id));
+        fs::write(&stage, b"incomplete encrypted bytes").unwrap();
+        write_descriptor(&file, &record).unwrap();
+        cleanup_locked(
+            &file,
+            &record,
+            |_| Ok(Some(Zeroizing::new(fs::read(&destination)?))),
+            |_| panic!("old cleanup must preserve replacement cache generation"),
+            native_storage::remove_staging,
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert!(!stage.exists());
+        assert!(!file.exists());
+        assert_eq!(fs::read(&destination).unwrap(), *replacement);
+        fs::remove_file(destination).unwrap();
     }
 }

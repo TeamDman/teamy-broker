@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use teamy_broker_handoff::queue::Queue;
@@ -5,7 +6,7 @@ use tokio::net::TcpListener;
 use tokio::task::JoinSet;
 use tokio::time;
 use tokio::time::Instant;
-/// Finite, bounded TLS listener; synthetic queue is still the application authority.
+/// Finite loopback TLS fixture; the synthetic queue owns application authentication.
 /// # Errors
 /// Rejects unapproved/mismatched binds, out-of-range lifetimes and listener errors.
 pub async fn serve(
@@ -30,18 +31,11 @@ pub async fn serve_until(
     until: Instant,
 ) -> eyre::Result<()> {
     let local = listener.local_addr()?;
-    let loopback = local.ip().is_loopback();
+    require_loopback(local)?;
     eyre::ensure!(
         until > Instant::now() && until <= Instant::now() + Duration::from_mins(5),
         "finite dummy lifetime required"
     );
-    if !loopback {
-        eyre::ensure!(
-            super::tailnet_peer::TailnetPeer::permits_bind(local),
-            "tailnet activation blocked"
-        );
-        super::tailnet_peer::TailnetPeer::verify_desktop().await?;
-    }
     let mut workers = JoinSet::new();
     loop {
         tokio::select! {
@@ -50,12 +44,10 @@ pub async fn serve_until(
             finished = workers.join_next(), if !workers.is_empty() => { let _ = finished; }
             incoming = listener.accept() => {
                 let (socket, peer) = incoming?;
-                if workers.len() >= 4 || (loopback && !peer.ip().is_loopback())
-                    || (!loopback && !super::tailnet_peer::TailnetPeer::permits_source(peer)) { continue; }
+                if workers.len() >= 4 || !peer.ip().is_loopback() { continue; }
                 let queue = Arc::clone(&queue); let acceptor = acceptor.clone();
                 workers.spawn(async move {
                     let _ = time::timeout_at(until.min(Instant::now()+Duration::from_secs(5)), async {
-                        if !loopback { super::tailnet_peer::TailnetPeer::verify_peer(peer).await?; }
                         let mut tls = acceptor.accept(socket).await
                             .map_err(|_redacted_error| eyre::eyre!("dummy TLS rejected"))?;
                         // No unauthenticated packet can resolve the Queue; existing AEAD is mandatory.
@@ -67,4 +59,39 @@ pub async fn serve_until(
     }
     workers.shutdown().await;
     Ok(())
+}
+
+fn require_loopback(address: SocketAddr) -> eyre::Result<()> {
+    eyre::ensure!(
+        address.ip().is_loopback(),
+        "synthetic TLS requires loopback"
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::require_loopback;
+    use std::net::Ipv4Addr;
+    use std::net::Ipv6Addr;
+
+    #[test]
+    fn synthetic_tls_rejects_non_loopback_without_binding_a_socket() {
+        for address in [
+            (Ipv4Addr::UNSPECIFIED, 43188).into(),
+            (Ipv4Addr::BROADCAST, 43188).into(),
+            (Ipv6Addr::UNSPECIFIED, 43188).into(),
+        ] {
+            assert_eq!(
+                require_loopback(address).unwrap_err().to_string(),
+                "synthetic TLS requires loopback"
+            );
+        }
+        for address in [
+            (Ipv4Addr::LOCALHOST, 43188).into(),
+            (Ipv6Addr::LOCALHOST, 43188).into(),
+        ] {
+            require_loopback(address).unwrap();
+        }
+    }
 }

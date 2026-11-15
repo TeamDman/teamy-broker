@@ -21,10 +21,10 @@ final class PairingForeground {
   catch(RuntimeException ignored){current=null;client.close();failed.run();return;}
   MAIN.postDelayed(()->{if(current==lease&&lease.service==null){finish(client);failed.run();}},3000);
  }
- static Lease claim(String token){return current!=null&&current.service==null&&current.token.equals(token)&&current.client.live(false)?current:null;}
+ static Lease claim(String token){return current!=null&&current.service==null&&current.token.equals(token)&&current.client.live()?current:null;}
  static boolean started(Lease lease,PhoneService service){
-  if(current!=lease||!lease.client.live(false))return false;
-  lease.service=service;lease.ready.run();return current==lease&&lease.client.live(false);
+  if(current!=lease||!lease.client.live())return false;
+  lease.service=service;lease.ready.run();return current==lease&&lease.client.live();
  }
  static void finish(PairingClient client){
   if(Looper.myLooper()!=Looper.getMainLooper()){MAIN.post(()->finish(client));return;}
@@ -34,5 +34,5 @@ final class PairingForeground {
  static void destroyed(Lease lease){
   if(lease==null)return;lease.client.close();if(current==lease){current=null;lease.failed.run();}
  }
- static boolean active(){return current!=null&&current.service!=null&&current.client.live(false);}
+ static boolean active(){return current!=null&&current.service!=null&&current.client.live();}
 }

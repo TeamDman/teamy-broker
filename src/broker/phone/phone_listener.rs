@@ -1,4 +1,4 @@
-use crate::broker::mobile_dummy::phone_profile::PhoneProfile;
+use crate::broker::phone::config::PhoneProfile;
 use tokio::net::TcpListener;
 
 /// A listener and the configuration that was verified before it was bound.

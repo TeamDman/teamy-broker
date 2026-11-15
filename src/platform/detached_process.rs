@@ -4,7 +4,8 @@ use std::mem;
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 use std::ptr;
-use windows_sys::Win32::Foundation::CloseHandle;
+use windows::Win32::Foundation::HANDLE;
+use windows::core::Owned;
 use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 use windows_sys::Win32::System::Threading::CreateProcessW;
 use windows_sys::Win32::System::Threading::PROCESS_INFORMATION;
@@ -60,10 +61,10 @@ pub fn spawn(executable: &Path, arguments: &[String]) -> eyre::Result<()> {
         )
     };
     eyre::ensure!(created != 0, "broker start failed");
-    // SAFETY: successful CreateProcess returns owned process and thread handles; child remains independent after closing them.
-    unsafe { CloseHandle(process.hThread) };
-    // SAFETY: close the other owned handle exactly once without terminating the normal per-user child.
-    unsafe { CloseHandle(process.hProcess) };
+    // SAFETY: successful CreateProcess transfers one owned thread handle.
+    let _thread = unsafe { Owned::new(HANDLE(process.hThread)) };
+    // SAFETY: the other successful result is an independently owned process handle.
+    let _process = unsafe { Owned::new(HANDLE(process.hProcess)) };
     Ok(())
 }
 #[cfg(test)]

@@ -1,4 +1,5 @@
-//! Experimental protocol. There is deliberately no production mode or persistent pairing.
+//! Shared pairing bindings for resident enrollment, plus encrypted handoff fixtures.
+//! The synthetic queue accepts only the fixed demonstration request metadata.
 pub mod binding;
 mod entry;
 pub mod envelope;

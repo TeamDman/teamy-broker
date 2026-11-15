@@ -1,14 +1,21 @@
+use super::completion_policy::CompletionPolicy;
+use super::output::OutputFormat;
 use crate::broker::app_request::AppRequest;
-use crate::protocol::Request;
 use crate::protocol::pairing_comparison::PairingCode;
 use arbitrary::Arbitrary;
 use facet::Facet;
-use std::path::PathBuf;
+use std::time::Duration;
 #[derive(Facet, Arbitrary, Debug, PartialEq)]
 #[repr(u8)]
 pub enum Command {
     /// Run the foreground per-user daemon; no service installation or elevation.
     Serve(super::serve::ServeArgs),
+    /// Save runtime phone settings while the broker is stopped; revoke before changing an enrolled profile.
+    PhoneConfigure(super::phone_configure::PhoneConfigureArgs),
+    /// Show local profile readiness; private values require --show-values.
+    PhoneConfigShow(super::phone_config_show::PhoneConfigShowArgs),
+    /// Validate the local profile and Java executable without connecting or changing trust.
+    PhoneConfigValidate(super::phone_config_validate::PhoneConfigValidateArgs),
     /// Arm one five-minute phone no-vault enrollment attempt; compare both screens or use exact-ID CLI confirmation.
     PhonePair(super::phone_pair::PhonePairArgs),
     /// Scoped ephemeral pairing comparison control; never expands credential permissions.
@@ -38,9 +45,65 @@ pub enum Command {
 }
 impl Command {
     #[must_use]
+    pub const fn completion_policy(&self) -> CompletionPolicy {
+        match self {
+            Self::PhoneConfigure(_)
+            | Self::PhonePair(_)
+            | Self::PhoneRevoke(_)
+            | Self::PhoneAuthorize(_)
+            | Self::PhonePairCancel(_)
+            | Self::PhonePairConfirm(_)
+            | Self::Stop(_)
+            | Self::Purge(_)
+            | Self::Cleanup(_) => CompletionPolicy::ReportConfirmedMutation,
+            Self::Serve(_)
+            | Self::PhoneConfigShow(_)
+            | Self::PhoneConfigValidate(_)
+            | Self::PhoneList(_)
+            | Self::PhoneStatus(_)
+            | Self::PhonePairInspect(_)
+            | Self::Status(_)
+            | Self::Preview(_) => CompletionPolicy::CancellationWins,
+        }
+    }
+
+    #[must_use]
+    pub const fn elapsed_duration_warn_threshold(&self) -> Option<Duration> {
+        match self {
+            Self::PhoneConfigure(_)
+            | Self::PhoneConfigShow(_)
+            | Self::PhoneConfigValidate(_)
+            | Self::Status(_)
+            | Self::Stop(_)
+            | Self::Purge(_)
+            | Self::Cleanup(_) => Some(Duration::from_secs(10)),
+            Self::Preview(args) if !args.show_test_dialog => Some(Duration::from_secs(10)),
+            Self::Serve(_)
+            | Self::PhonePair(_)
+            | Self::PhoneRevoke(_)
+            | Self::PhoneAuthorize(_)
+            | Self::PhonePairCancel(_)
+            | Self::PhonePairConfirm(_)
+            | Self::PhoneList(_)
+            | Self::PhoneStatus(_)
+            | Self::PhonePairInspect(_)
+            | Self::Preview(_) => None,
+        }
+    }
+
+    /// # Errors
+    /// Rejects output formats that cannot represent this command's result before execution.
+    pub fn validate_output_format(&self, requested: Option<OutputFormat>) -> eyre::Result<()> {
+        super::output_policy::validate(self, requested)
+    }
+
+    #[must_use]
     pub const fn name(&self) -> &'static str {
         match self {
             Self::Serve(_) => "serve",
+            Self::PhoneConfigure(_) => "phone-configure",
+            Self::PhoneConfigShow(_) => "phone-config-show",
+            Self::PhoneConfigValidate(_) => "phone-config-validate",
             Self::PhonePair(_) => "phone-pair",
             Self::PhonePairCancel(_) => "phone-pair-cancel",
             Self::PhonePairConfirm(_) => "phone-pair-confirm",
@@ -69,58 +132,23 @@ impl Command {
         comparison: Option<PairingCode>,
     ) -> eyre::Result<AppRequest> {
         Ok(match self {
-            Self::Serve(args) => AppRequest::Serve(PathBuf::from(
-                args.op_executable.unwrap_or_else(|| "op.exe".into()),
-            )),
-            Self::Status(_) => AppRequest::Control(Request::control("status", None)),
-            Self::PhonePair(_) => AppRequest::Control(Request::control("phone-pair", None)),
-            Self::PhonePairCancel(args) => {
-                uuid::Uuid::parse_str(&args.attempt_id)
-                    .map_err(|_redacted_error| eyre::eyre!("invalid attempt ID"))?;
-                AppRequest::Control(Request::control("phone-pair-cancel", Some(args.attempt_id)))
-            }
-
-            Self::PhonePairConfirm(args) => {
-                args.validate()?;
-                let code = comparison.ok_or_else(|| eyre::eyre!("comparison input required"))?;
-                AppRequest::PairingConfirm {
-                    attempt_id: args.attempt_id,
-                    code,
-                }
-            }
-
-            Self::PhonePairInspect(args) => {
-                uuid::Uuid::parse_str(&args.attempt_id)
-                    .map_err(|_redacted_error| eyre::eyre!("invalid attempt ID"))?;
-                AppRequest::Control(Request::control(
-                    "phone-pair-inspect",
-                    Some(args.attempt_id),
-                ))
-            }
-
-            Self::PhoneRevoke(_) => AppRequest::Control(Request::control("phone-revoke", None)),
-            Self::PhoneList(_) => AppRequest::Control(Request::control("phone-list", None)),
-            Self::PhoneStatus(_) => AppRequest::Control(Request::control("phone-status", None)),
-            Self::PhoneAuthorize(args) => AppRequest::Control(args.request()?),
-            Self::Preview(args) => AppRequest::Preview(args.show_test_dialog),
-            Self::Stop(args) => AppRequest::Control(Request::control(
-                if args.force { "stop-force" } else { "stop" },
-                None,
-            )),
-            Self::Purge(args) => {
-                eyre::ensure!(
-                    args.all ^ args.lease_id.is_some(),
-                    "select exactly one of --all or --lease-id"
-                );
-                let request = Request::control("purge", args.lease_id);
-                request.validate()?;
-                AppRequest::Control(request)
-            }
-            Self::Cleanup(args) => {
-                uuid::Uuid::parse_str(&args.lease_id)
-                    .map_err(|_redacted_error| eyre::eyre!("invalid lease ID"))?;
-                AppRequest::Cleanup(args.lease_id)
-            }
+            Self::PhoneConfigure(args) => AppRequest::PhoneConfig(args.into_request()?),
+            Self::PhoneConfigShow(args) => AppRequest::PhoneConfig(args.into_request()?),
+            Self::PhoneConfigValidate(args) => AppRequest::PhoneConfig(args.into_request()?),
+            Self::Serve(args) => args.into_request()?,
+            Self::Status(_) => AppRequest::Status,
+            Self::PhonePair(_) => AppRequest::PhonePair,
+            Self::PhonePairCancel(args) => args.into_request()?,
+            Self::PhonePairConfirm(args) => args.into_request(comparison)?,
+            Self::PhonePairInspect(args) => args.into_request()?,
+            Self::PhoneRevoke(_) => AppRequest::PhoneRevoke,
+            Self::PhoneList(_) => AppRequest::PhoneList,
+            Self::PhoneStatus(_) => AppRequest::PhoneStatus,
+            Self::PhoneAuthorize(args) => AppRequest::PhoneAuthorize(args.into_request()?),
+            Self::Preview(args) => args.into_request(),
+            Self::Stop(args) => args.into_request(),
+            Self::Purge(args) => args.into_request()?,
+            Self::Cleanup(args) => args.into_request()?,
         })
     }
 }

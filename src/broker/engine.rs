@@ -1,5 +1,6 @@
 use super::adapter::Adapter;
 use super::approval::Approval;
+use super::cancel_guard::CancelGuard;
 use super::grant::Grant;
 use super::lease::Lease;
 use super::storage::Storage;
@@ -22,28 +23,33 @@ use std::sync::Arc;
 #[cfg(test)]
 use std::sync::Mutex as SyncMutex;
 use std::sync::atomic::AtomicBool;
-use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 use tokio::sync::Mutex;
+use tokio::sync::OwnedMutexGuard;
+use tokio::sync::oneshot;
+use tokio::task;
 use tokio::time;
-use zeroize::Zeroize;
+mod engine_storage;
+mod lease_delivery;
+mod lease_publication;
+mod storage_task_guard;
+mod storage_task_tracker;
+use engine_storage::EngineStorage;
+use lease_publication::LeasePublication;
 /// Approval and adapter are injectable. The explicit preview never enters acquisition.
 pub struct Engine {
     activity: Arc<super::work_state::WorkState>,
     adapter: Arc<dyn Adapter>,
     approval: Arc<dyn Approval>,
-    storage: Arc<dyn Storage>,
-    pub(crate) leases: Mutex<HashMap<String, Lease>>,
+    storage: Arc<EngineStorage>,
+    pub(crate) leases: Arc<Mutex<HashMap<String, Lease>>>,
     #[cfg(test)]
     pub(crate) fixture_controller: SyncMutex<Option<Arc<super::phone::Controller>>>,
-    gate: Mutex<()>,
-    pub stopping: AtomicBool,
+    gate: Arc<Mutex<()>>,
+    pub stopping: Arc<AtomicBool>,
     pub stop_ready: AtomicBool,
-    failures: AtomicU64,
-    pending: Mutex<Vec<Lease>>,
-    epoch: AtomicU64,
     #[cfg(test)]
     pub(crate) publication_gate: SyncMutex<Option<Arc<super::publication_gate::PublicationGate>>>,
 }
@@ -58,27 +64,26 @@ impl Engine {
         approval: Arc<dyn Approval>,
         storage: Arc<dyn Storage>,
     ) -> Self {
+        let activity = Arc::default();
+        let storage = Arc::new(EngineStorage::new(storage, Arc::clone(&activity)));
         Self {
-            activity: Arc::default(),
+            activity,
             adapter,
             approval,
-            storage,
-            leases: Mutex::new(HashMap::new()),
+            leases: Arc::clone(&storage.leases),
             #[cfg(test)]
             fixture_controller: SyncMutex::new(None),
-            gate: Mutex::new(()),
-            stopping: AtomicBool::new(false),
+            gate: Arc::new(Mutex::new(())),
+            stopping: Arc::clone(&storage.stopping),
+            storage,
             stop_ready: AtomicBool::new(false),
-            failures: AtomicU64::new(0),
-            pending: Mutex::new(Vec::new()),
-            epoch: AtomicU64::new(0),
             #[cfg(test)]
             publication_gate: SyncMutex::new(None),
         }
     }
+    /// Acquire an exact-use lease through approval, provider read and owned publication.
     /// # Errors
-    ///
-    /// Returns an error on invalid configuration, expired leases, denial, or failed I/O.
+    /// Rejects invalid requests, denial, cancellation, expiry and provider/storage failures.
     pub async fn acquire(
         &self,
         request: AcquireRequest,
@@ -126,12 +131,12 @@ impl Engine {
         request.validate()?;
         let request_work = self.activity.request()?;
         let queued = request_work.phase(super::work_kind::WorkKind::Queued);
-        let epoch = self.epoch.load(Ordering::SeqCst);
-        let _gate = self.gate.lock().await;
+        let epoch = self.storage.epoch.load(Ordering::SeqCst);
+        let gate = Arc::clone(&self.gate).lock_owned().await;
         drop(queued);
         eyre::ensure!(
             !self.stopping.load(Ordering::SeqCst)
-                && epoch == self.epoch.load(Ordering::SeqCst)
+                && epoch == self.storage.epoch.load(Ordering::SeqCst)
                 && !cancel.load(Ordering::SeqCst),
             "cancelled"
         );
@@ -147,7 +152,7 @@ impl Engine {
                 .find(|l| l.request == request && l.valid(now))
             {
                 return Ok(Grant {
-                    work: request_work,
+                    _work: request_work,
                     id: lease.id.clone(),
                     expires: lease.expires,
                     deadline: lease.deadline,
@@ -179,7 +184,7 @@ impl Engine {
         };
         if cancel.load(Ordering::SeqCst)
             || self.stopping.load(Ordering::SeqCst)
-            || epoch != self.epoch.load(Ordering::SeqCst)
+            || epoch != self.storage.epoch.load(Ordering::SeqCst)
         {
             if let super::approval_decision::ApprovalDecision::Shared(shared) = &approved {
                 shared.resolve(ApprovalPreviewDisposition::Cancelled);
@@ -199,10 +204,10 @@ impl Engine {
             lease.valid(wire::unix_ms()?)
                 && !cancel.load(Ordering::SeqCst)
                 && !self.stopping.load(Ordering::SeqCst)
-                && epoch == self.epoch.load(Ordering::SeqCst),
+                && epoch == self.storage.epoch.load(Ordering::SeqCst),
             "lease expired or cancelled"
         );
-        self.publish_lease(lease, request_work, cancel, epoch, provenance)
+        self.publish_lease(lease, request_work, cancel, epoch, provenance, gate)
             .await
     }
     async fn publish_lease(
@@ -212,15 +217,9 @@ impl Engine {
         cancel: Arc<AtomicBool>,
         epoch: u64,
         provenance: Option<Arc<super::shared_preview::SharedPreview>>,
+        gate: OwnedMutexGuard<()>,
     ) -> eyre::Result<Grant> {
-        let grant = Grant {
-            work: request_work,
-            id: lease.id.clone(),
-            expires: lease.expires,
-            deadline: lease.deadline,
-            bytes: zeroize::Zeroizing::new(lease.secret.to_vec()),
-        };
-        let _storage = grant.work.phase(super::work_kind::WorkKind::Storage);
+        let work = request_work.phase(WorkKind::Storage);
         #[cfg(test)]
         let test_gate = self.publication_gate.lock().unwrap().clone();
         #[cfg(test)]
@@ -228,54 +227,27 @@ impl Engine {
             gate.ready.notify_one();
             gate.release.notified().await;
         }
-        let mut leases = self.leases.lock().await;
-        let mut candidate = Some(lease);
-        let mut published = false;
-        let valid = || {
-            eyre::ensure!(
-                !cancel.load(Ordering::SeqCst)
-                    && !self.stopping.load(Ordering::SeqCst)
-                    && epoch == self.epoch.load(Ordering::SeqCst),
-                FailureKind::RequestCancelled
-            );
-            if let Some(shared) = &provenance {
-                shared.publication_valid()?;
-            }
-            Ok::<_, eyre::Report>(())
+        let abandoned = Arc::new(AtomicBool::new(false));
+        let _abandoned = CancelGuard(Arc::clone(&abandoned));
+        let (finished, completion) = oneshot::channel();
+        let publication = LeasePublication {
+            state: Arc::clone(&self.storage),
+            lease: Some(lease),
+            request_work: Some(request_work),
+            cancel,
+            abandoned,
+            epoch,
+            provenance,
+            _gate: gate,
+            _work: work,
+            _tracked: self.storage.tasks.begin(),
         };
-        let mut action = || {
-            valid()?;
-            let lease = candidate
-                .as_ref()
-                .ok_or_else(|| eyre::eyre!("publication unavailable"))?;
-            eyre::ensure!(lease.valid(wire::unix_ms()?), "lease expired");
-            self.storage
-                .publish(lease)
-                .map_err(|_redacted| eyre::Report::new(FailureKind::CachePublishFailed))?;
-            published = true;
-            valid()?;
-            eyre::ensure!(lease.valid(wire::unix_ms()?), "lease expired");
-            leases.insert(
-                lease.id.clone(),
-                candidate
-                    .take()
-                    .ok_or_else(|| eyre::eyre!("publication unavailable"))?,
-            );
-            Ok(())
-        };
-        let result = match &provenance {
-            Some(shared) => shared.with_publication(action),
-            None => action(),
-        };
-        drop(leases);
-        if result.is_err()
-            && published
-            && let Some(lease) = candidate.take()
-        {
-            self.retire(lease).await;
-        }
-        result?;
-        Ok(grant)
+        task::spawn_blocking(move || publication.run(finished));
+        completion
+            .await
+            .map_err(|_closed| FailureKind::CachePublishFailed)??
+            .accept()
+            .await
     }
     async fn resolve_approval(
         &self,
@@ -400,78 +372,78 @@ impl Engine {
             }
         }
     }
-    async fn retire(&self, mut lease: Lease) {
-        let _work = self.activity.phase(super::work_kind::WorkKind::Storage);
-        if self.storage.remove(&lease).is_err() {
-            lease.secret.zeroize();
-            self.failures.fetch_add(1, Ordering::SeqCst);
-            self.pending.lock().await.push(lease);
-        }
-    }
+    /// Remove selected leases from visibility and finish their physical cleanup.
+    /// Purging all leases also invalidates pending acquisitions and drains their rollback.
     /// # Errors
-    ///
-    /// Returns an error on invalid configuration, expired leases, denial, or failed I/O.
+    /// Reports retained cleanup failures so a later purge can retry them.
     pub async fn purge(&self, id: Option<&str>) -> eyre::Result<()> {
         let _work = self.activity.phase(super::work_kind::WorkKind::Storage);
         if id.is_none() {
-            self.epoch.fetch_add(1, Ordering::SeqCst);
+            self.storage.epoch.fetch_add(1, Ordering::SeqCst);
         }
-        let removed = {
+        let retired = {
             let mut leases = self.leases.lock().await;
             let ids: Vec<_> = leases
                 .keys()
                 .filter(|key| id.is_none_or(|id| id == key.as_str()))
                 .cloned()
                 .collect();
-            ids.into_iter()
+            let removed = ids
+                .into_iter()
                 .filter_map(|id| leases.remove(&id))
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>();
+            self.storage.start_retirement(removed)
         };
-        for lease in removed {
-            self.retire(lease).await;
+        let _ = retired.await;
+        if id.is_none() {
+            self.storage.tasks.drain().await;
         }
         self.retry_cleanup().await;
+        if id.is_none() {
+            self.storage.tasks.drain().await;
+        }
         eyre::ensure!(
-            self.pending.lock().await.is_empty(),
+            self.storage.pending.lock().await.is_empty(),
             "cache cleanup incomplete"
         );
         Ok(())
     }
+    /// Retire expired leases and retry failed cleanup without blocking runtime threads.
     /// # Errors
-    ///
-    /// Returns an error on invalid configuration, expired leases, denial, or failed I/O.
+    /// Reports an unavailable wall clock; cleanup failures remain visible in status.
     pub async fn expire(&self) -> eyre::Result<()> {
         let _work = self.activity.phase(super::work_kind::WorkKind::Storage);
         let now = wire::unix_ms()?;
-        let expired = {
+        let retired = {
             let mut leases = self.leases.lock().await;
             let ids: Vec<_> = leases
                 .iter()
                 .filter(|(_, l)| !l.valid(now))
                 .map(|(id, _)| id.clone())
                 .collect();
-            ids.into_iter()
+            let expired = ids
+                .into_iter()
                 .filter_map(|id| leases.remove(&id))
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>();
+            self.storage.start_retirement(expired)
         };
-        for lease in expired {
-            self.retire(lease).await;
-        }
+        let _ = retired.await;
         self.retry_cleanup().await;
         Ok(())
     }
     async fn retry_cleanup(&self) {
-        let old = mem::take(&mut *self.pending.lock().await);
-        for lease in old {
-            self.retire(lease).await;
-        }
+        let retired = {
+            let mut pending = self.storage.pending.lock().await;
+            self.storage.start_retirement(mem::take(&mut *pending))
+        };
+        let _ = retired.await;
     }
+    /// Report leases and owned work without waiting for native storage operations.
     /// # Errors
-    ///
-    /// Returns an error on invalid configuration, expired leases, denial, or failed I/O.
+    /// Reports an unavailable wall clock or an unrepresentable item count.
     pub async fn status(&self) -> eyre::Result<Status> {
         let leases = self.leases.lock().await;
-        let pending = self.pending.lock().await;
+        let pending = self.storage.pending.lock().await;
         let work = self.activity.snapshot();
         let now = wire::unix_ms()?;
         let active_leases =
@@ -495,7 +467,7 @@ impl Engine {
             running: true,
             shutdown_state_available: true,
             active_leases,
-            cleanup_failures: self.failures.load(Ordering::SeqCst),
+            cleanup_failures: self.storage.failures.load(Ordering::SeqCst),
             active_requests: work.counts[WorkKind::Request as usize],
             queued_requests: work.counts[WorkKind::Queued as usize],
             active_approvals: work.counts[WorkKind::Approval as usize],
@@ -517,7 +489,7 @@ impl Engine {
     /// Refuses unsafe shutdown unless force explicitly authorizes interruption and lease discard.
     pub async fn stop(&self, force: bool) -> eyre::Result<()> {
         let leases = self.leases.lock().await;
-        let pending = self.pending.lock().await;
+        let pending = self.storage.pending.lock().await;
         let now = wire::unix_ms()?;
         self.activity.admit_stop(
             force,
@@ -529,9 +501,6 @@ impl Engine {
         drop(leases);
         self.shutdown().await
     }
-    /// # Errors
-    ///
-    /// Returns an error on invalid configuration, expired leases, denial, or failed I/O.
     /// Check an opaque live lease without exposing item or secret data.
     /// # Errors
     ///
@@ -557,7 +526,7 @@ impl Engine {
             failure: None,
         })
     }
-    /// Stop new grants and purge broker-owned caches.
+    /// Stop new grants and drain native publication, rollback and cache cleanup.
     /// # Errors
     ///
     /// Reports incomplete persistent cleanup.

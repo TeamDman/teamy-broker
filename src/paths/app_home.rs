@@ -35,8 +35,13 @@ impl AppHome {
     ///
     /// This function will return an error if the config directory cannot be determined.
     pub fn resolve() -> eyre::Result<AppHome> {
-        if let Ok(override_dir) = env::var(super::APP_HOME_ENV_VAR) {
-            return Ok(AppHome(PathBuf::from(override_dir)));
+        if let Some(override_dir) = env::var_os(super::APP_HOME_ENV_VAR) {
+            let path = PathBuf::from(override_dir);
+            eyre::ensure!(
+                path.is_absolute(),
+                "application home must be an absolute path"
+            );
+            return Ok(AppHome(path));
         }
         if let Some(project_dirs) =
             ProjectDirs::from("", "TeamDman", super::TEAMY_BROKER_HOME_DIR_NAME)

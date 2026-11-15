@@ -1,10 +1,13 @@
 use super::Controller;
+#[cfg(test)]
+use super::config::JavaExecutablePath;
+use super::pairing;
+use super::pairing::pairing_runtime::PairingRuntime;
 use super::phone_listener::PhoneListener;
 use crate::broker::engine::Engine;
-use crate::broker::mobile_dummy::phone_profile::PhoneProfile;
-use crate::broker::mobile_dummy::tailnet_peer::PORT;
-use crate::broker::mobile_dummy::tailnet_peer::TailnetPeer;
-use crate::broker::mobile_dummy::{self};
+use crate::broker::phone::config::PhoneProfile;
+use crate::broker::phone::tailnet::PORT;
+use crate::broker::phone::tailnet::TailnetPeer;
 use crate::paths::AppHome;
 use crate::protocol::phone_status::PhonePhase;
 use crate::protocol::wire;
@@ -166,12 +169,12 @@ async fn dispatch(
     binding.session_expires_unix_ms = binding.pairing_expires_unix_ms;
     let until = Instant::now() + remaining;
     let java = policy.java_executable(profile.as_ref())?;
-    let artifacts = Path::new(env!("CARGO_MANIFEST_DIR")).join("pairing/java");
+    let artifacts = policy.pairing_runtime()?;
     controller.phase(PhonePhase::Pairing);
     let paired = policy
         .accept(
             socket,
-            (&java, &artifacts),
+            (&java, artifacts.as_path()),
             &binding,
             until,
             attempt,
@@ -212,6 +215,14 @@ pub(super) enum NetworkPolicy {
     },
 }
 impl NetworkPolicy {
+    fn pairing_runtime(&self) -> eyre::Result<PairingRuntime> {
+        match self {
+            Self::Pinned => PairingRuntime::installed(),
+            #[cfg(test)]
+            Self::Loopback { .. } => Ok(PairingRuntime::development_fixture()),
+        }
+    }
+
     async fn bind(&self) -> eyre::Result<PhoneListener> {
         #[cfg(test)]
         if let Self::Loopback { ready, events } = self {
@@ -260,9 +271,7 @@ impl NetworkPolicy {
                 Ok(profile.java.clone().into_path_buf())
             }
             #[cfg(test)]
-            Self::Loopback { .. } => {
-                Ok(mobile_dummy::JavaExecutablePath::for_tests()?.into_path_buf())
-            }
+            Self::Loopback { .. } => Ok(JavaExecutablePath::for_tests()?.into_path_buf()),
         }
     }
     async fn verify_peer(
@@ -289,17 +298,17 @@ impl NetworkPolicy {
         until: Instant,
         attempt: Arc<super::pairing_confirmation::Attempt>,
         profile: Option<&PhoneProfile>,
-    ) -> eyre::Result<mobile_dummy::paired_socket::PairedSocket> {
+    ) -> eyre::Result<pairing::paired_socket::PairedSocket> {
         let (java, artifacts) = runtime;
         #[cfg(test)]
         if self.test_only() {
             let peer = socket.peer_addr()?;
-            return mobile_dummy::pairing_server::accept_test_loopback_socket(
+            return pairing::pairing_server::accept_test_loopback_socket(
                 socket, peer, java, artifacts, binding, until, attempt,
             )
             .await;
         }
-        mobile_dummy::pairing_server::accept_persistent_socket(
+        pairing::pairing_server::accept_persistent_socket(
             socket,
             java,
             artifacts,
@@ -332,7 +341,7 @@ impl NetworkPolicy {
 #[cfg(test)]
 mod tests {
     use super::NetworkPolicy;
-    use crate::broker::mobile_dummy::phone_profile;
+    use crate::broker::phone::config::phone_profile;
     use std::net::SocketAddr;
 
     #[test]

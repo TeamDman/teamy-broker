@@ -9,11 +9,12 @@ use std::str;
 use std::sync::Arc;
 use std::time::Duration;
 use teamy_broker::broker::engine::Engine;
-use teamy_broker::broker::mobile_dummy::phone_profile::PhoneProfile;
-use teamy_broker::broker::mobile_dummy::tailnet_peer::PORT;
-use teamy_broker::broker::mobile_dummy::tailnet_peer::TailnetPeer;
 use teamy_broker::broker::mobile_dummy::tls_identity::TlsIdentity;
 use teamy_broker::broker::mobile_dummy::{self};
+use teamy_broker::broker::phone::config::PhoneProfile;
+use teamy_broker::broker::phone::pairing::packet::Packet;
+use teamy_broker::broker::phone::tailnet::PORT;
+use teamy_broker::broker::phone::tailnet::TailnetPeer;
 use teamy_broker::broker::server;
 use teamy_broker::paths::AppHome;
 use teamy_broker::protocol::wire;
@@ -44,7 +45,7 @@ fn connector(cert: CertificateDer<'static>) -> tokio_rustls::TlsConnector {
 async fn tls_exchange(
     address: SocketAddr,
     connector: &tokio_rustls::TlsConnector,
-    packet: &mobile_dummy::packet::Packet,
+    packet: &Packet,
 ) -> eyre::Result<Envelope> {
     let tcp = TcpStream::connect(address).await?;
     let mut tls = connector
@@ -101,7 +102,7 @@ async fn tls_poll_submit_completes_existing_sdk_consumer_and_rejects_replay() {
     let consumer = client.clone();
     let waiting = tokio::spawn(async move { consumer.acquire(mobile_dummy::request()).await });
     let challenge = teamy_broker_handoff_wire::random::<32>().unwrap();
-    let poll = mobile_dummy::packet::Packet {
+    let poll = Packet {
         operation: "poll".into(),
         envelope: phone
             .seal(teamy_broker_handoff::POLL_AAD, &challenge)
@@ -129,7 +130,7 @@ async fn tls_poll_submit_completes_existing_sdk_consumer_and_rejects_replay() {
     let mut outer = exact.into_bytes();
     outer.push(0);
     outer.extend(facet_json::to_string(&inner).unwrap().as_bytes());
-    let submit = mobile_dummy::packet::Packet {
+    let submit = Packet {
         operation: "submit".into(),
         envelope: phone
             .seal(teamy_broker_handoff::SUBMIT_AAD, &outer)
@@ -185,7 +186,7 @@ async fn wrong_certificate_hostname_session_plaintext_and_frames_fail_closed() {
         .map(|_| ())
         .unwrap_err();
     let bad = Session::random().unwrap();
-    let packet = mobile_dummy::packet::Packet {
+    let packet = Packet {
         operation: "poll".into(),
         envelope: bad.seal(teamy_broker_handoff::POLL_AAD, &[0; 32]).unwrap(),
     };
