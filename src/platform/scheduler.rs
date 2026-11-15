@@ -9,18 +9,12 @@ use std::time::Instant;
 
 const TASK_NOT_FOUND_HELPER: &str = r"
 # Only classify exceptions caught from an exact GetTask or DeleteTask COM call.
-# PowerShell can map HRESULT 0x80070002 to FileNotFoundException inside its
-# MethodInvocationException instead of retaining the original COMException.
+# PowerShell can map HRESULT 0x80070002 to FileNotFoundException, returned bare
+# by Task Scheduler or nested in an invocation wrapper by other COM bindings.
 function Test-BrokerTaskNotFound([System.Exception] $Exception) {
-    $methodInvocation = $false
     while ($null -ne $Exception) {
-        if ($Exception -is [System.Runtime.InteropServices.COMException]) {
-            return $Exception.HResult -eq -2147024894
-        }
-        if ($Exception -is [System.Management.Automation.MethodInvocationException]) {
-            $methodInvocation = $true
-        }
-        if ($methodInvocation -and $Exception -is [System.IO.FileNotFoundException]) {
+        if ($Exception -is [System.Runtime.InteropServices.COMException] -or
+            $Exception -is [System.IO.FileNotFoundException]) {
             return $Exception.HResult -eq -2147024894
         }
         $Exception = $Exception.InnerException
@@ -114,6 +108,14 @@ mod tests {
     use super::TASK_NOT_FOUND_HELPER;
     use super::run;
 
+    #[test]
+    fn missing_task_lookup_accepts_the_unwrapped_exception_returned_by_com() {
+        let script = format!(
+            "{TASK_NOT_FOUND_HELPER}\n$ErrorActionPreference='Stop';$missing=[System.Runtime.InteropServices.Marshal]::GetExceptionForHR(-2147024894);if ($missing -isnot [System.IO.FileNotFoundException]) {{throw 'unexpected HRESULT mapping'}};if (!(Test-BrokerTaskNotFound $missing)) {{throw 'unwrapped missing task rejected'}};'unwrapped-ok'"
+        );
+        assert_eq!(run(&script).unwrap().trim(), "unwrapped-ok");
+    }
+
     const CLASSIFICATION_CASES: &str = r"
 $ErrorActionPreference = 'Stop'
 $missing = [System.Runtime.InteropServices.COMException]::new('missing task', -2147024894)
@@ -135,11 +137,11 @@ try { [System.Runtime.InteropServices.Marshal]::ThrowExceptionForHR(-2147024894)
 }
 $denied = [System.Runtime.InteropServices.COMException]::new('denied', -2147024891)
 $pathMissing = [System.Runtime.InteropServices.COMException]::new('missing path', -2147024893)
-$fileMissing = [System.IO.FileNotFoundException]::new('unrelated missing file')
+$fileLoad = [System.IO.FileLoadException]::new('unrelated file load failure')
 $other = [System.InvalidOperationException]::new('unrelated operation')
 $mappedDenied = [System.Runtime.InteropServices.Marshal]::GetExceptionForHR(-2147024891)
 $mappedPathMissing = [System.Runtime.InteropServices.Marshal]::GetExceptionForHR(-2147024893)
-foreach ($exception in @($denied, $pathMissing, $other, $mappedDenied, $mappedPathMissing)) {
+foreach ($exception in @($denied, $pathMissing, $fileLoad, $other, $mappedDenied, $mappedPathMissing)) {
     foreach ($candidate in @($exception, [System.Management.Automation.MethodInvocationException]::new('wrapped', $exception))) {
         if (Test-BrokerTaskNotFound $candidate) { throw 'unrelated failure was classified as missing task' }
         $propagated = $false
@@ -150,9 +152,6 @@ foreach ($exception in @($denied, $pathMissing, $other, $mappedDenied, $mappedPa
         } catch { $propagated = $true }
         if (!$propagated) { throw 'unrelated failure was suppressed' }
     }
-}
-foreach ($exception in @($fileMissing, [System.Reflection.TargetInvocationException]::new('unrelated', $fileMissing))) {
-    if (Test-BrokerTaskNotFound $exception) { throw 'missing file without method wrapper was classified as a task' }
 }
 'classification-ok'
 ";

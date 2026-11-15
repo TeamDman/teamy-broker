@@ -96,7 +96,7 @@ fn isolated_native_backends_register_before_publish_and_generation_cleanup_prese
         persistence::cleanup(&second.id, true).unwrap();
         assert!(cache_reader::read(&backend).unwrap().is_none());
         assert!(!scheduler::exists(&second.id).unwrap());
-        drop(guard);
+        guard.finish().unwrap();
     }
 }
 #[test]
@@ -118,7 +118,7 @@ fn failed_native_publish_removes_its_task_and_preserves_foreign_destination() {
     assert_eq!(fs::read(&path).unwrap(), b"synthetic foreign file");
     assert!(!scheduler::exists(&item.id).unwrap());
     fs::remove_file(path).unwrap();
-    drop(guard);
+    guard.finish().unwrap();
     let target =
         Backend::WindowsCredentialManager(format!("teamy-broker/synthetic-test/{namespace}"));
     let mut item = lease(target.clone());
@@ -131,7 +131,7 @@ fn failed_native_publish_removes_its_task_and_preserves_foreign_destination() {
     assert!(persistence::publish(&item).is_err());
     assert!(cache_reader::read(&target).unwrap().is_none());
     assert!(!scheduler::exists(&item.id).unwrap());
-    drop(guard);
+    guard.finish().unwrap();
 }
 
 #[tokio::test]
@@ -209,7 +209,7 @@ async fn sdk_persistent_reads_fail_closed_after_purge_and_restart() {
         .await;
         assert!(cache_reader::read(&backend).unwrap().is_none());
         assert!(!scheduler::exists(&secret.lease_id).unwrap());
-        drop(guard);
+        guard.finish().unwrap();
     }
 }
 
