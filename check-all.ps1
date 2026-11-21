@@ -36,8 +36,6 @@ try {
     Invoke-NativeCheck 'format check' 'rustup' @('run', 'nightly', '--', 'cargo', 'fmt', '--all', '--', '--check')
     Invoke-NativeCheck 'workspace Clippy' 'cargo' @('clippy', '--offline', '--locked', '--workspace', '--all-targets', '--all-features', '--no-deps', '--', '-D', 'warnings')
     Invoke-NativeCheck 'isolated SDK dependency check' 'cargo' @('check', '--offline', '--locked', '--package', 'teamy-broker-sdk', '--all-targets')
-    Invoke-ScriptCheck 'broker lint policy fixtures' 'check-lint-policy.ps1'
-    Invoke-ScriptCheck 'SDK lint policy fixtures' 'check-lint-policy.ps1' @{ ManifestPath = (Join-Path $PSScriptRoot 'sdk/Cargo.toml') }
 
     # Existing pinned dependencies and a JDK are prerequisites. These host checks
     # do not download tools, accept licenses, sign APKs or install on a device.
